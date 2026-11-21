@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>mc-native-exp · 原生启动实验 — Aurora 生态实验项目</title>
+<meta name="description" content="实验项目：Minecraft 官方全量下载 + 微软正版认证 + 四大模组加载器自动安装 + Rust 字节码解释器原型（脱离 JVM 可行性研究）。实验项目，可能不稳定。">
+<style>
+:root{--bg:#07090f;--panel:rgba(13,18,30,.72);--line:rgba(95,140,255,.16);--muted:#8b93a8;--cyan:#5fe8ff;--amber:#ffc861}
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:var(--bg);color:#dfe6f3;font-family:"Segoe UI",system-ui,sans-serif;min-height:100vh}
+.wrap{max-width:920px;margin:0 auto;padding:48px 22px 80px}
+.warn{border:1px solid rgba(255,200,97,.5);background:rgba(255,200,97,.08);color:var(--amber);border-radius:12px;padding:18px 20px;font-size:14px;line-height:1.8;margin-bottom:28px}
+.warn b{font-size:16px}
+h1{font-size:30px;letter-spacing:.02em;background:linear-gradient(92deg,#8fdcff,#c9b8ff);-webkit-background-clip:text;background-clip:text;color:transparent;margin-bottom:10px}
+.sub{color:var(--muted);font-size:13.5px;line-height:1.9;margin-bottom:34px}
+.card{border:1px solid var(--line);background:var(--panel);border-radius:14px;padding:22px;margin-bottom:18px}
+.card h2{font-size:16px;color:var(--cyan);margin-bottom:12px;letter-spacing:.06em}
+.card p,.card li{font-size:13.5px;line-height:2;color:#c6cede}
+.card ul{padding-left:20px}
+code{font-family:Consolas,monospace;background:rgba(95,232,255,.08);padding:1px 6px;border-radius:5px;font-size:12.5px;color:#9fe6ff}
+.dl{display:inline-block;border:1px solid rgba(95,232,255,.5);color:var(--cyan);text-decoration:none;border-radius:10px;padding:10px 22px;font-size:14px;margin:14px 10px 0 0;transition:.15s}
+.dl:hover{background:rgba(95,232,255,.1)}
+.foot{color:var(--muted);font-size:12px;margin-top:36px;line-height:1.9}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="warn">
+    <b>⚠ 实验项目 · 可能不稳定</b><br>
+    mc-native-exp 是探索性实验，不做任何稳定性承诺：加载器安装、启动与解释器都可能失败或变动。
+    请把它当作技术演示，日常使用请继续选择 Aurora 正式版。安装/测试只写入本工具自己的 <code>data\</code> 目录。
+  </div>
+
+  <h1>mc-native-exp · 原生启动实验</h1>
+  <div class="sub">
+    围绕一个问题做实验：拿到官方全套 Minecraft 文件与正版账号后，启动能否不依赖 JVM？<br>
+    当前版本 <code>v0.0.1.beta</code>（版本方案：patch 逐次 +1 至 .9 后进位，全程带 beta 后缀）。
+  </div>
+
+  <div class="card">
+    <h2>① 官方全量下载 + 正版账号</h2>
+    <ul>
+      <li>piston-meta 全版本清单（实测 <b>925 个版本</b>），client / libraries / assets / natives 全套官方源下载，SHA1 流式校验 + 断点续传</li>
+      <li>微软设备码登录 → Xbox → Minecraft services → <b>所有权校验</b>：无正版账号实验拒绝继续</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h2>② 四大模组加载器自动安装</h2>
+    <ul>
+      <li><code>install fabric 1.21.4</code> / <code>install quilt …</code> — meta API 直装，无需 Java</li>
+      <li><code>install neoforge …</code> / <code>install forge …</code> — 官方安装器 + 自动下载 Adoptium JRE 跑处理器</li>
+      <li>安装全部写入项目 <code>data\</code>，不碰系统目录；<code>launch &lt;id&gt;</code> 正版会话启动（G1 优化参数 + smoke 模式）</li>
+      <li>OptiFine / LiteLoader（补丁型 / 停更）不在自动安装范围</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h2>③ 脱 JVM 可行性研究（解释器原型）</h2>
+    <ul>
+      <li>Rust 手写 Java class 文件解析器（JVMS §4，常量池 17 种 tag 全覆盖）</li>
+      <li>字节码解释器逐条解释官方 client jar——数据表明几百~几千条指令即撞墙：JNI / invokedynamic / JDK 语义</li>
+      <li>结论：转译路线工程量以人年计；可玩的「无 Java MC」现成方案是 Horizon（Aurora 已集成）</li>
+    </ul>
+  </div>
+
+  <a class="dl" href="https://github.com/xcqm12/mc-native-exp" target="_blank" rel="noopener">GitHub 仓库</a>
+  <a class="dl" href="https://github.com/xcqm12/mc-native-exp/releases/tag/v0.0.1.beta" target="_blank" rel="noopener">下载 v0.0.1.beta（Windows x64）</a>
+
+  <div class="foot">
+    仅用于技术研究；下载物只做字节级解析、从不执行；不绕过任何认证。<br>
+    与 Aurora Launcher 正式版相互独立；Minecraft 是 Mojang/Microsoft 的商标，本项目与其无隶属关系。
+  </div>
+</div>
+</body>
+</html>
