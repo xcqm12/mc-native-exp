@@ -1,0 +1,5 @@
+/target/
+/data/
+/auth.log
+/*.log
+/build.log
