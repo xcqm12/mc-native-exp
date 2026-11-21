@@ -31,31 +31,50 @@ pub async fn run(
     let natives = dir.join("natives");
     std::fs::create_dir_all(&natives).map_err(|e| format!("{e}"))?;
 
-    // classpath：libraries（windows 规则）+ client jar
+    // classpath：libraries（windows 规则）+ client jar。
+    // 按 maven GA 去重且 loader（子 profile，列表靠后）优先——否则同库不同版本
+    // 并存会触发 fabric loader 的 duplicate classes 检查直接拒绝启动。
     let mut cp = Vec::new();
+    let mut seen_ga: std::collections::HashSet<String> = Default::default();
     if let Some(libs) = v.get("libraries").and_then(|x| x.as_array()) {
-        for lib in libs {
+        for lib in libs.iter().rev() {
             if !crate::fetch::rules_allow_windows(lib.get("rules")) {
                 continue;
             }
+            let name = lib.get("name").and_then(|x| x.as_str()).unwrap_or_default().to_string();
+            let parts: Vec<&str> = name.split(':').collect();
+            // natives-* 分类器条目不进 classpath（dll 已解压到 natives 目录）
+            if parts.len() >= 4 && parts[3].starts_with("natives") {
+                continue;
+            }
+            let ga: String = parts.first().unwrap_or(&"").to_string()
+                + ":" + parts.get(1).unwrap_or(&"");
+            if !ga.is_empty() && !seen_ga.insert(ga.clone()) {
+                continue; // 子 profile 已提供该库
+            }
             let dl = lib.get("downloads");
             let artifact = dl.and_then(|d| d.get("artifact")).cloned().unwrap_or(Value::Null);
+            let mut found = false;
             if let Some(p) = crate::fetch::lib_path_of(&artifact) {
                 let full = data.join("libraries").join(&p);
                 if full.exists() {
                     cp.push(full);
-                } else {
-                    let name = lib.get("name").and_then(|x| x.as_str()).unwrap_or_default();
-                    println!("  ⚠ 缺库：{name}（{}）", p);
+                    found = true;
                 }
-            } else if let Some(name) = lib.get("name").and_then(|x| x.as_str()) {
-                let p = maven_rel(name);
+            }
+            if !found {
+                let p = maven_rel(&name);
                 let full = data.join("libraries").join(&p);
                 if full.exists() {
                     cp.push(full);
+                    found = true;
                 }
             }
+            if !found {
+                println!("  ⚠ 缺库：{name}（{}）", name.split(':').take(2).collect::<Vec<_>>().join("/"));
+            }
         }
+        cp.reverse(); // 恢复原顺序（父在前）
     }
     // client jar：继承链上每个有 downloads.client 的
     let mut cur: Option<Value> = Some(v.clone());

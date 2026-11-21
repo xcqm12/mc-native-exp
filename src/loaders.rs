@@ -41,12 +41,8 @@ fn meta_base(loader: &str) -> &'static str {
     }
 }
 
-/// Fabric/Quilt 安装器最新版（maven-metadata 的 <release>）。
-pub async fn latest_loader_version(
-    client: &reqwest::Client,
-    loader: &str,
-    _mc: &str,
-) -> Result<String, String> {
+/// Fabric/Quilt 安装器（jar）最新版（maven-metadata 的 <release>）——不是 loader 版本。
+pub async fn latest_installer_version(client: &reqwest::Client, loader: &str) -> Result<String, String> {
     let url = match loader {
         "fabric" => "https://maven.fabricmc.net/net/fabricmc/fabric-installer/maven-metadata.xml",
         _ => "https://maven.quiltmc.org/repository/release/org/quiltmc/quilt-installer/maven-metadata.xml",
@@ -58,8 +54,48 @@ pub async fn latest_loader_version(
         .and_then(|r| r.error_for_status())
         .map_err(|e| format!("{loader} maven：{e}"))?;
     let text = resp.text().await.map_err(|e| format!("{e}"))?;
-    let release = regex_like_release(&text).ok_or_else(|| format!("{loader} metadata 无 release"))?;
-    Ok(release)
+    regex_like_release(&text).ok_or_else(|| format!("{loader} metadata 无 release"))
+}
+
+/// Fabric/Quilt loader 最新版（meta 列表第一个 stable）——这才是 -loader 参数。
+pub async fn latest_loader_version(
+    client: &reqwest::Client,
+    loader: &str,
+    mc: &str,
+) -> Result<String, String> {
+    let url = match loader {
+        "fabric" => format!("https://meta.fabricmc.net/v2/versions/loader/{mc}"),
+        _ => format!("https://meta.quiltmc.org/v3/versions/loader/{mc}"),
+    };
+    let arr: Value = client
+        .get(&url)
+        .send()
+        .await
+        .and_then(|r| r.error_for_status())
+        .map_err(|e| format!("{loader} meta：{e}"))?
+        .json()
+        .await
+        .map_err(|e| format!("{e}"))?;
+    let items = arr
+        .as_array()
+        .ok_or_else(|| format!("{loader} 还没有支持 {mc} 的版本"))?;
+    for it in items {
+        let v = it.pointer("/loader/version").and_then(|x| x.as_str());
+        let stable = it
+            .pointer("/loader/stable")
+            .and_then(|x| x.as_bool())
+            .unwrap_or(true);
+        if let Some(v) = v {
+            if stable {
+                return Ok(v.to_string());
+            }
+        }
+    }
+    items
+        .first()
+        .and_then(|it| it.pointer("/loader/version").and_then(|x| x.as_str()))
+        .map(String::from)
+        .ok_or_else(|| format!("{loader} meta 无版本"))
 }
 
 fn regex_like_release(text: &str) -> Option<String> {
@@ -79,6 +115,7 @@ async fn install_via_installer(
     mc: &str,
     loader_version: Option<&str>,
 ) -> Result<String, String> {
+    // loader 版本（-loader 参数）与安装器版本（jar）是两个东西
     let lv = match loader_version {
         Some(v) => v.to_string(),
         None => {
@@ -89,13 +126,18 @@ async fn install_via_installer(
             }
         }
     };
-    println!("{loader} 安装器版本 {lv}（MC {mc}）");
+    let installer_ver = if matches!(loader, "fabric" | "quilt") {
+        Some(latest_installer_version(client, loader).await?)
+    } else {
+        None
+    };
+    println!("{loader} loader {lv} / installer {installer_ver:?}（MC {mc}）");
 
     // 原版 JSON 先就位（安装器要 inheritsFrom 的父版本与父 jar）
     fetch::fetch_version(client, data, Some(mc), true).await?;
 
     // 安装器 jar
-    let url = installer_url(client, loader, mc, &lv).await?;
+    let url = installer_url(client, loader, mc, installer_ver.as_deref().unwrap_or(&lv)).await?;
     let dl_dir = data.join("downloads");
     std::fs::create_dir_all(&dl_dir).map_err(|e| format!("{e}"))?;
     let installer = dl_dir.join(format!("{loader}-{lv}-installer.jar"));
@@ -111,20 +153,25 @@ async fn install_via_installer(
     let java = jre::ensure(client, data, java_major).await?;
     println!("用 JRE：{}", java.display());
 
-    let game_dir = data.join("game");
-    std::fs::create_dir_all(&game_dir).map_err(|e| format!("{e}"))?;
+    // 安装器要求 -dir 下有 versions/（原版 JSON）与 launcher_profiles.json；
+    // data/ 本身就是这个布局（data/versions、data/libraries）。
+    let profiles = data.join("launcher_profiles.json");
+    if !profiles.exists() {
+        std::fs::write(&profiles, br#"{"profiles":{},"settings":{},"version":3}"#)
+            .map_err(|e| format!("{e}"))?;
+    }
     let mut cmd = tokio::process::Command::new(&java);
     cmd.arg("-jar").arg(&installer);
     match loader {
         "fabric" | "quilt" => {
-            cmd.args(["client", "-dir"]).arg(&game_dir)
+            cmd.args(["client", "-dir"]).arg(data)
                 .args(["-mcversion", mc]).args(["-loader", &lv]);
         }
         _ => {
-            cmd.arg("--installClient").arg(&game_dir);
+            cmd.arg("--installClient").arg(data);
         }
     }
-    cmd.current_dir(&game_dir);
+    cmd.current_dir(data);
     let out = cmd.output().await.map_err(|e| format!("安装器启动失败：{e}"))?;
     let log = format!(
         "{}{}",
@@ -138,7 +185,7 @@ async fn install_via_installer(
         return Err(format!("安装器退出码 {:?}，日志尾部：{}", out.status.code(), tail));
     }
 
-    let id = find_installed(data, &game_dir, loader, &lv)?;
+    let id = find_installed(data, data, loader, &lv)?;
     println!("安装完成：{id}");
     crate::profile::fetch_profile(client, data, &id).await?;
     Ok(id)
@@ -241,81 +288,6 @@ async fn download_file(
 }
 
 /// Forge/NeoForge：下载安装器 → 预下载其 libraries → 自动 JRE 跑 --installClient。
-async fn install_forge_like(
-    client: &reqwest::Client,
-    data: &Path,
-    loader: &str,
-    mc: &str,
-    loader_version: Option<&str>,
-) -> Result<String, String> {
-    let lv = match loader_version {
-        Some(v) => v.to_string(),
-        None => {
-            if loader == "neoforge" {
-                latest_neoforge(client, mc).await?
-            } else {
-                latest_forge(client, mc).await?
-            }
-        }
-    };
-    println!("{loader} 版本 {lv}（MC {mc}）——安装器安装");
-
-    // 0) 原版 JSON 先就位（安装器要 inheritsFrom 的父版本）
-    let m = crate::manifest::load(data)?;
-    let entry = crate::manifest::resolve(&m, Some(mc))?;
-    fetch::fetch_version(client, data, Some(mc), true).await?;
-    let _ = entry;
-
-    // 1) 安装器
-    let url = installer_url(client, loader, mc, &lv).await?;
-    let dl_dir = data.join("downloads");
-    std::fs::create_dir_all(&dl_dir).map_err(|e| format!("{e}"))?;
-    let installer = dl_dir.join(format!("{loader}-{lv}-installer.jar"));
-    download_file(client, &url, &installer, &format!("{loader} installer")).await?;
-
-    // 2) 预下载安装器要用的 libraries（读 install_profile.json/version.json）
-    predownload_installer_libs(client, data, &installer).await?;
-
-    // 3) JRE（安装器处理器需要）
-    let java_major = required_java_major(data, mc).unwrap_or(21);
-    let java = jre::ensure(client, data, java_major).await?;
-    println!("安装器用 JRE：{}", java.display());
-
-    // 4) --installClient 到 data\game
-    let game_dir = data.join("game");
-    std::fs::create_dir_all(&game_dir).map_err(|e| format!("{e}"))?;
-    let out = tokio::process::Command::new(&java)
-        .args(["-jar"])
-        .arg(&installer)
-        .arg("--installClient")
-        .arg(&game_dir)
-        .current_dir(&game_dir)
-        .output()
-        .await
-        .map_err(|e| format!("安装器启动失败：{e}"))?;
-    let log = format!(
-        "{}{}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let log_path = data.join(format!("{loader}-install.log"));
-    let _ = std::fs::write(&log_path, &log);
-    if !out.status.success() {
-        let tail: String = log.chars().rev().take(2000).collect::<String>().chars().rev().collect();
-        return Err(format!(
-            "安装器退出码 {:?}，日志尾部：{}",
-            out.status.code(),
-            tail
-        ));
-    }
-
-    // 5) 找生成的版本 id（versions 目录里带 loader 前缀的新 JSON）
-    let id = find_installed(data, &game_dir, loader, &lv)?;
-    println!("安装完成：{id}");
-    crate::profile::fetch_profile(client, data, &id).await?;
-    Ok(id)
-}
-
 fn find_installed(data: &Path, game_dir: &Path, loader: &str, lv: &str) -> Result<String, String> {
     // 官方安装器把版本 JSON 写进 <game_dir>/versions/<id>/
     let dirs = [game_dir.join("versions"), data.join("versions")];

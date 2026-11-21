@@ -52,3 +52,24 @@ mc-native-exp report
 见 `REPORT.md`（运行 `report` 子命令自动生成；TL;DR：下载与认证完全可行，字节码解析可行，
 解释执行在几百~几千条指令内撞墙——墙 = JDK 语义 + JNI + invokedynamic + 反射，
 工程量以人年计；已有可行替代：Horizon（Rust 从零重写的 MC，`feature/horizon` 分支已集成）。
+
+
+## 实测结果（2026-11-22 · v0.0.2.beta）
+
+| 项 | 结果 |
+|---|---|
+| manifest 全版本 | ✅ 925 个（103 正式版），纯官方 piston-meta |
+| 微软正版认证 | ✅ 设备码 → XBL → XSTS → entitlements 全链（SevenZeroMeow 实测通过） |
+| Fabric 1.21.4 自动安装 | ✅ 安装器路线，3564 文件/322MB |
+| **Fabric 启动 smoke** | ✅ **进入游戏引擎初始化**（1688 行日志，LWJGL/OpenAL/glfw 全就位） |
+| NeoForge / Forge 安装 | 代码完成；实测时国际网络到 maven 主机拥堵，待网络恢复复测 |
+| class 解析（26.3） | ✅ 11383/11383 全部解析（major 69 = Java 25） |
+| 字节码解释器 | ✅ 首堵墙 = StringConcatFactory（invokedynamic ×32134 / 依赖闭包 jar 内 10662 类 + JDK 482 + 第三方 17134 处）——脱 JVM 差距的量化数据 |
+
+### 本轮修复的关键 bug
+
+- XSTS RelyingParty 必须是 `rp://api.minecraftservices.com/`（400 空体根因）
+- `--data` 相对路径基于 CWD（此前落 exe 目录）
+- classpath 按 maven GA 去重（loader 优先）+ natives-\* 分类器不进 classpath（jtracy/ASM 双版本冲突根因）
+- 新版 natives（普通 artifact 形态）解压支持（lwjgl.dll 根因）
+- 设备码 expired_token/invalid_grant 自动换码；XSTS/MC 响应重试

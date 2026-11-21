@@ -48,8 +48,43 @@ pub async fn ensure(client: &reqwest::Client, data: &Path, major: u32) -> Result
     println!("解压 JRE……");
     let fp = std::fs::File::open(&zip_path).map_err(|e| format!("{e}"))?;
     let mut z = zip::ZipArchive::new(fp).map_err(|e| format!("jre zip：{e}"))?;
-    z.extract(&root).map_err(|e| format!("jre 解压：{e}"))?;
+    // 逐条目解压：个别条目失败不致命（只要 java.exe 在即可）
+    let mut failed = 0usize;
+    for i in 0..z.len() {
+        let mut entry = match z.by_index(i) {
+            Ok(e) => e,
+            Err(_) => {
+                failed += 1;
+                continue;
+            }
+        };
+        let Some(rel) = entry.enclosed_name().map(|p| p.to_path_buf()) else {
+            failed += 1;
+            continue;
+        };
+        let out = root.join(rel);
+        if entry.is_dir() {
+            let _ = std::fs::create_dir_all(&out);
+            continue;
+        }
+        if let Some(parent) = out.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let mut w = match std::fs::File::create(&out) {
+            Ok(w) => w,
+            Err(_) => {
+                failed += 1;
+                continue;
+            }
+        };
+        if std::io::copy(&mut entry, &mut w).is_err() {
+            failed += 1;
+        }
+    }
     let _ = std::fs::remove_file(&zip_path);
+    if failed > 0 {
+        println!("解压：{failed} 个条目失败（非致命）");
+    }
     find_java_exe(&root).ok_or_else(|| format!("JRE {major} 解压后没找到 java.exe"))
 }
 

@@ -53,39 +53,44 @@ fn jars_dir(data: &Path) -> PathBuf {
 /// BMCLAPI 国内镜像映射（与 Aurora Launcher launch.rs 同规则）。
 /// 返回镜像 URL；无映射的 host 返回 None（保持官方）。
 pub(crate) fn bmclapi_mirror(url: &str, version_id: &str) -> Option<String> {
-    let path = url.splitn(4, '/').nth(3).unwrap_or("");
+    // path 保留前导斜杠（url.path() 语义）
+    let mut path = url.splitn(4, '/').nth(3).unwrap_or("").to_string();
+    if !path.starts_with('/') {
+        path.insert(0, '/');
+    }
     let host = {
         let rest = url.strip_prefix("https://").or_else(|| url.strip_prefix("http://"))?;
         rest.split('/').next().unwrap_or("")
     };
     let m = |suffix: &str| format!("https://bmclapi2.bangbang93.com{suffix}");
     match host {
-        "piston-meta.mojang.com" | "launchermeta.mojang.com" => Some(m(path).into()),
+        "piston-meta.mojang.com" | "launchermeta.mojang.com" => Some(m(&path)),
         "piston-data.mojang.com" => {
             if path.ends_with("/client.jar") && !version_id.is_empty() {
                 Some(m(&format!("/version/{version_id}/client")))
             } else {
-                Some(m(path).into())
+                Some(m(&path))
             }
         }
-        "resources.download.minecraft.net" => Some(m(path).into()),
-        "libraries.minecraft.net" => Some(m(&format!("/maven/{path}"))),
-        "maven.minecraftforge.net" => Some(m(&format!("/maven/{path}"))),
-        "maven.fabricmc.net" => Some(m(&format!("/maven/{path}"))),
+        // BMCLAPI assets 带 /assets 前缀：/0a/hash → /assets/0a/hash
+        "resources.download.minecraft.net" => Some(m(&format!("/assets{path}"))),
+        "libraries.minecraft.net" => Some(m(&format!("/maven{path}"))),
+        "maven.minecraftforge.net" => Some(m(&format!("/maven{path}"))),
+        "maven.fabricmc.net" => Some(m(&format!("/maven{path}"))),
         "maven.neoforged.net" => Some(m(&format!(
             "/maven{}",
-            {
-                let p = path.to_string();
-                p.strip_prefix("/releases").unwrap_or(&p).to_string()
-            }
+            path.strip_prefix("/releases").unwrap_or(&path)
         ))),
         _ => None,
     }
 }
 
-/// 候选顺序：国内镜像优先（本实验实测官方源频繁抖动），无镜像则官方单独。
+/// 候选顺序：maven/meta 类国内镜像优先；assets 大流量走官方优先
+/// （本网络实测 BMCLAPI assets 高并发不稳），无镜像则官方单独。
 pub(crate) fn mirror_candidates(url: &str, version_id: &str) -> Vec<String> {
+    let assets_first = url.contains("resources.download.minecraft.net");
     match bmclapi_mirror(url, version_id) {
+        Some(m) if assets_first => vec![url.to_string(), m],
         Some(m) => vec![m, url.to_string()],
         None => vec![url.to_string()],
     }

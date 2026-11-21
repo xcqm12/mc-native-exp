@@ -138,6 +138,8 @@ pub async fn fetch_profile(client: &reqwest::Client, data: &Path, id: &str) -> R
                     ));
                 }
             }
+            // 旧版：downloads.classifiers["natives-windows"]
+            let mut natives_hit = false;
             let natives = dl
                 .and_then(|d| d.get("classifiers"))
                 .and_then(|c| c.get("natives-windows"))
@@ -162,6 +164,25 @@ pub async fn fetch_profile(client: &reqwest::Client, data: &Path, id: &str) -> R
                             .to_string(),
                         natives.get("size").and_then(|x| x.as_u64()).unwrap_or(0),
                     ));
+                    natives_hit = true;
+                }
+            }
+            // 新版（1.19+）：natives-windows 是普通 artifact（name 第 4 段），
+            // 下载后同样解压 dll；arm64/x86 变体不参与解压（防错架构覆盖）
+            let parts: Vec<&str> = lib.get("name").and_then(|x| x.as_str()).unwrap_or_default().split(':').collect();
+            if !natives_hit && parts.len() >= 4 && parts[3] == "natives-windows" {
+                if crate::fetch::rules_allow_windows(lib.get("rules")) {
+                    let artifact = dl.and_then(|d| d.get("artifact")).cloned().unwrap_or(Value::Null);
+                    if let Some(p) = fetch::lib_path_of(&artifact) {
+                        let dest = lib_root.join(&p);
+                        native_jars.push(dest.clone());
+                        jobs.push((
+                            artifact.get("url").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+                            dest,
+                            artifact.get("sha1").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+                            artifact.get("size").and_then(|x| x.as_u64()).unwrap_or(0),
+                        ));
+                    }
                 }
             }
         }
