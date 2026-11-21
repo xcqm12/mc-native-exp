@@ -83,6 +83,20 @@ pub async fn ensure_session(client: &reqwest::Client, data: &Path) -> Result<Ses
 
 /// 设备码登录：打印码 → 打开浏览器 → 轮询 → 全链校验。
 pub async fn login(client: &reqwest::Client, data: &Path) -> Result<Session, String> {
+    // 有有效缓存/可续期会话时直接复用，不打扰用户
+    if let Some(s) = load_cached(data) {
+        println!("已用缓存的正版会话：{} ({})", s.player_name, s.player_uuid);
+        return Ok(s);
+    }
+    if let Ok(text) = std::fs::read_to_string(token_path(data)) {
+        if let Ok(old) = serde_json::from_str::<Session>(&text) {
+            if let Ok(s) = refresh(client, &old).await {
+                save(data, &s)?;
+                println!("token 已静默续期：{}", s.player_name);
+                return Ok(s);
+            }
+        }
+    }
     let cid = client_id();
     let dc: DeviceCode = client
         .post(DEVICECODE_URL)

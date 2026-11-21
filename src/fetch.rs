@@ -50,6 +50,47 @@ fn jars_dir(data: &Path) -> PathBuf {
     data.join("jars")
 }
 
+/// BMCLAPI 国内镜像映射（与 Aurora Launcher launch.rs 同规则）。
+/// 返回镜像 URL；无映射的 host 返回 None（保持官方）。
+pub(crate) fn bmclapi_mirror(url: &str, version_id: &str) -> Option<String> {
+    let path = url.splitn(4, '/').nth(3).unwrap_or("");
+    let host = {
+        let rest = url.strip_prefix("https://").or_else(|| url.strip_prefix("http://"))?;
+        rest.split('/').next().unwrap_or("")
+    };
+    let m = |suffix: &str| format!("https://bmclapi2.bangbang93.com{suffix}");
+    match host {
+        "piston-meta.mojang.com" | "launchermeta.mojang.com" => Some(m(path).into()),
+        "piston-data.mojang.com" => {
+            if path.ends_with("/client.jar") && !version_id.is_empty() {
+                Some(m(&format!("/version/{version_id}/client")))
+            } else {
+                Some(m(path).into())
+            }
+        }
+        "resources.download.minecraft.net" => Some(m(path).into()),
+        "libraries.minecraft.net" => Some(m(&format!("/maven/{path}"))),
+        "maven.minecraftforge.net" => Some(m(&format!("/maven/{path}"))),
+        "maven.fabricmc.net" => Some(m(&format!("/maven/{path}"))),
+        "maven.neoforged.net" => Some(m(&format!(
+            "/maven{}",
+            {
+                let p = path.to_string();
+                p.strip_prefix("/releases").unwrap_or(&p).to_string()
+            }
+        ))),
+        _ => None,
+    }
+}
+
+/// 候选顺序：国内镜像优先（本实验实测官方源频繁抖动），无镜像则官方单独。
+pub(crate) fn mirror_candidates(url: &str, version_id: &str) -> Vec<String> {
+    match bmclapi_mirror(url, version_id) {
+        Some(m) => vec![m, url.to_string()],
+        None => vec![url.to_string()],
+    }
+}
+
 /// 简单并发下载：有界并发，逐个回传进度行。
 pub(crate) async fn download_batch(
     client: &reqwest::Client,
@@ -87,7 +128,35 @@ pub(crate) async fn download_batch(
 
 /// 单文件：dest 已存在且 size 匹配则校验 SHA1，通过即跳过；否则流式下载校验。
 /// 返回 (是否新下载, 字节数)。
-async fn download_one(
+pub(crate) async fn download_one(
+    client: &reqwest::Client,
+    url: &str,
+    dest: &Path,
+    sha1_hex: &str,
+    size: u64,
+    label: &str,
+) -> Result<(bool, u64), String> {
+    // 镜像优先（BMCLAPI），失败回落官方
+    let candidates = mirror_candidates(url, "");
+    let mut last = String::new();
+    for cand in &candidates {
+        match download_one_from(client, cand, dest, sha1_hex, size, label).await {
+            Ok(r) => return Ok(r),
+            Err(e) => {
+                if candidates.len() > 1 {
+                    eprintln!(
+                        "  {label}：{} 失败（{e}），换源重试……",
+                        cand.split('/').nth(2).unwrap_or("?")
+                    );
+                }
+                last = e;
+            }
+        }
+    }
+    Err(last)
+}
+
+async fn download_one_from(
     client: &reqwest::Client,
     url: &str,
     dest: &Path,

@@ -22,8 +22,9 @@ pub async fn install(
     // 正版前提：安装/取用前必须持有有效会话
     crate::auth::ensure_session(client, data).await?;
     match loader {
-        "fabric" | "quilt" => install_meta(client, data, loader, mc, loader_version).await,
-        "forge" | "neoforge" => install_forge_like(client, data, loader, mc, loader_version).await,
+        "fabric" | "quilt" | "neoforge" | "forge" => {
+            install_via_installer(client, data, loader, mc, loader_version).await
+        }
         other => Err(format!(
             "不支持的加载器 {other}——实验支持：{}（OptiFine/LiteLoader 不在自动安装范围）",
             SUPPORTED.join("/")
@@ -40,50 +41,38 @@ fn meta_base(loader: &str) -> &'static str {
     }
 }
 
-/// 最新可用 loader 版本（meta 列表第一个 stable）。
+/// Fabric/Quilt 安装器最新版（maven-metadata 的 <release>）。
 pub async fn latest_loader_version(
     client: &reqwest::Client,
     loader: &str,
-    mc: &str,
+    _mc: &str,
 ) -> Result<String, String> {
     let url = match loader {
-        "fabric" => format!("https://meta.fabricmc.net/v2/versions/loader/{mc}"),
-        _ => format!("https://meta.quiltmc.org/v3/versions/loader/{mc}"),
+        "fabric" => "https://maven.fabricmc.net/net/fabricmc/fabric-installer/maven-metadata.xml",
+        _ => "https://maven.quiltmc.org/repository/release/org/quiltmc/quilt-installer/maven-metadata.xml",
     };
-    let arr: Value = client
-        .get(&url)
+    let resp = client
+        .get(url)
         .send()
         .await
         .and_then(|r| r.error_for_status())
-        .map_err(|e| format!("{loader} meta：{e}"))?
-        .json()
-        .await
-        .map_err(|e| format!("{e}"))?;
-    let items = arr
-        .as_array()
-        .ok_or_else(|| format!("{loader} 还没有支持 {mc} 的版本"))?;
-    for it in items {
-        let src = it.pointer("/loader/version").and_then(|x| x.as_str());
-        let src = src.or_else(|| it.pointer("/loader/version").and_then(|x| x.as_str()));
-        if let Some(v) = src {
-            let stable = it
-                .pointer("/loader/stable")
-                .and_then(|x| x.as_bool())
-                .unwrap_or(true);
-            if stable {
-                return Ok(v.to_string());
-            }
-        }
-    }
-    items
-        .first()
-        .and_then(|it| it.pointer("/loader/version").and_then(|x| x.as_str()))
-        .map(String::from)
-        .ok_or_else(|| format!("{loader} meta 无版本"))
+        .map_err(|e| format!("{loader} maven：{e}"))?;
+    let text = resp.text().await.map_err(|e| format!("{e}"))?;
+    let release = regex_like_release(&text).ok_or_else(|| format!("{loader} metadata 无 release"))?;
+    Ok(release)
 }
 
-/// Fabric/Quilt：meta profile JSON → versions/<id>/ → libraries 下载（无需 Java）。
-async fn install_meta(
+fn regex_like_release(text: &str) -> Option<String> {
+    let start = text.find("<release>")? + "<release>".len();
+    let end = text[start..].find("</release>")? + start;
+    Some(text[start..end].to_string())
+}
+
+/// 统一安装器路线：下载 loader 官方安装器 jar → 自动 JRE 执行 client 安装 →
+/// 找生成的版本 JSON → 下载全套文件。
+/// - fabric/quilt：`client -dir <game> -mcversion <mc> -loader <lv>`
+/// - forge/neoforge：`--installClient <game>`（安装器内部跑处理器打补丁）
+async fn install_via_installer(
     client: &reqwest::Client,
     data: &Path,
     loader: &str,
@@ -92,43 +81,70 @@ async fn install_meta(
 ) -> Result<String, String> {
     let lv = match loader_version {
         Some(v) => v.to_string(),
-        None => latest_loader_version(client, loader, mc).await?,
+        None => {
+            match loader {
+                "fabric" | "quilt" => latest_loader_version(client, loader, mc).await?,
+                "neoforge" => latest_neoforge(client, mc).await?,
+                _ => latest_forge(client, mc).await?,
+            }
+        }
     };
-    println!("{loader} 版本 {lv}（MC {mc}）——meta 直装");
-    // inheritsFrom 的父（原版 JSON）必须先就位
+    println!("{loader} 安装器版本 {lv}（MC {mc}）");
+
+    // 原版 JSON 先就位（安装器要 inheritsFrom 的父版本与父 jar）
     fetch::fetch_version(client, data, Some(mc), true).await?;
-    let url = format!("{}/{mc}/{lv}/profile", meta_base(loader));
-    let profile: Value = client
-        .get(&url)
-        .send()
-        .await
-        .and_then(|r| r.error_for_status())
-        .map_err(|e| format!("profile 获取失败：{e}（{loader} 可能还不支持 {mc}）"))?
-        .json()
-        .await
-        .map_err(|e| format!("{e}"))?;
-    let id = profile
-        .get("id")
-        .and_then(|x| x.as_str())
-        .ok_or("profile 缺少 id")?
-        .to_string();
 
-    let dir = fetch::versions_dir(data).join(&id);
-    std::fs::create_dir_all(&dir).map_err(|e| format!("{e}"))?;
-    let path = dir.join(format!("{id}.json"));
-    let bytes = serde_json::to_vec_pretty(&profile).map_err(|e| e.to_string())?;
-    crate::manifest::write_atomic(&path, &bytes)?;
-    println!("版本 JSON：{}", path.display());
+    // 安装器 jar
+    let url = installer_url(client, loader, mc, &lv).await?;
+    let dl_dir = data.join("downloads");
+    std::fs::create_dir_all(&dl_dir).map_err(|e| format!("{e}"))?;
+    let installer = dl_dir.join(format!("{loader}-{lv}-installer.jar"));
+    download_file(client, &url, &installer, &format!("{loader} installer")).await?;
 
+    // forge/neoforge：预下载安装器 libraries（其内部下载器无重试，绕开）
+    if matches!(loader, "forge" | "neoforge") {
+        predownload_installer_libs(client, data, &installer).await?;
+    }
+
+    // JRE（安装器与模组版游戏都需要）
+    let java_major = required_java_major(data, mc).unwrap_or(21);
+    let java = jre::ensure(client, data, java_major).await?;
+    println!("用 JRE：{}", java.display());
+
+    let game_dir = data.join("game");
+    std::fs::create_dir_all(&game_dir).map_err(|e| format!("{e}"))?;
+    let mut cmd = tokio::process::Command::new(&java);
+    cmd.arg("-jar").arg(&installer);
+    match loader {
+        "fabric" | "quilt" => {
+            cmd.args(["client", "-dir"]).arg(&game_dir)
+                .args(["-mcversion", mc]).args(["-loader", &lv]);
+        }
+        _ => {
+            cmd.arg("--installClient").arg(&game_dir);
+        }
+    }
+    cmd.current_dir(&game_dir);
+    let out = cmd.output().await.map_err(|e| format!("安装器启动失败：{e}"))?;
+    let log = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let log_path = data.join(format!("{loader}-install.log"));
+    let _ = std::fs::write(&log_path, &log);
+    if !out.status.success() {
+        let tail: String = log.chars().rev().take(2000).collect::<String>().chars().rev().collect();
+        return Err(format!("安装器退出码 {:?}，日志尾部：{}", out.status.code(), tail));
+    }
+
+    let id = find_installed(data, &game_dir, loader, &lv)?;
+    println!("安装完成：{id}");
     crate::profile::fetch_profile(client, data, &id).await?;
     Ok(id)
 }
 
 /* ── Forge / NeoForge：官方安装器 + 自动 JRE ───────────────── */
-
-fn neoforge_maven_meta(mc: &str) -> String {
-    format!("https://maven.neoforged.net/api/maven/versions/releases/net/neoforged/neoforge")
-}
 
 /// NeoForge 最新版（maven metadata：版本号形如 <mc>.<build>）。
 async fn latest_neoforge(client: &reqwest::Client, mc: &str) -> Result<String, String> {
@@ -186,6 +202,17 @@ async fn installer_url(
     mc: &str,
     lv: &str,
 ) -> Result<String, String> {
+    let _ = (client, mc);
+    if loader == "fabric" {
+        return Ok(format!(
+            "https://maven.fabricmc.net/net/fabricmc/fabric-installer/{lv}/fabric-installer-{lv}.jar"
+        ));
+    }
+    if loader == "quilt" {
+        return Ok(format!(
+            "https://maven.quiltmc.org/repository/release/org/quiltmc/quilt-installer/{lv}/quilt-installer-{lv}.jar"
+        ));
+    }
     if loader == "neoforge" {
         return Ok(format!(
             "https://maven.neoforged.net/releases/net/neoforged/neoforge/{lv}/neoforge-{lv}-installer.jar"

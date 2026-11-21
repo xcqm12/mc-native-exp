@@ -111,10 +111,9 @@ async fn run(cli: Cli) -> Result<(), String> {
     let data = if cli.data.is_absolute() {
         cli.data
     } else {
-        std::env::current_exe()
-            .ok()
-            .and_then(|p| p.parent().map(|d| d.to_path_buf()))
-            .unwrap_or_else(|| PathBuf::from("."))
+        // 相对路径基于当前工作目录（标准 CLI 语义）
+        std::env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
             .join(&cli.data)
     };
     std::fs::create_dir_all(&data).map_err(|e| format!("创建数据目录失败：{e}"))?;
