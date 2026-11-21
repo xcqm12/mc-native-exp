@@ -132,7 +132,7 @@ pub async fn login(client: &reqwest::Client, data: &Path) -> Result<Session, Str
         match v.get("error").and_then(|x| x.as_str()) {
             Some("authorization_pending") => continue,
             Some("slow_down") => tokio::time::sleep(Duration::from_secs(5)).await,
-            Some("expired_token") => {
+            Some("invalid_grant") | Some("expired_token") => {
                 println!();
                 println!("⚠ 设备码已过期——自动签发新码，请用新码完成登录：");
                 return Box::pin(login(client, data)).await;
