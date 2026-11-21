@@ -194,23 +194,39 @@ async fn finish_login(
         .ok_or("Xbox 响应缺少 uhs")?
         .to_string();
 
-    // 2) XSTS
-    let xsts: serde_json::Value = client
-        .post("https://xsts.auth.xboxlive.com/xsts/authorize")
-        .json(&serde_json::json!({
-            "Properties": {
-                "SandboxId": "RETAIL",
-                "UserTokens": [xbl_token],
-            },
-            "RelyingParty": "urn:xbox:services",
-            "TokenType": "JWT",
-        }))
-        .send()
-        .await
-        .map_err(|e| format!("XSTS 认证失败：{e}"))?
-        .json()
-        .await
-        .map_err(|e| format!("XSTS 响应解析失败：{e}"))?;
+    // 2) XSTS（接口偶发非 JSON 响应：重试 + 宽松解析，最终失败自动换码）
+    let xsts: serde_json::Value = {
+        let mut got = None;
+        for attempt in 0..3u32 {
+            if attempt > 0 {
+                tokio::time::sleep(Duration::from_secs(3 * attempt as u64)).await;
+            }
+            let resp = client
+                .post("https://xsts.auth.xboxlive.com/xsts/authorize")
+                .json(&serde_json::json!({
+                    "Properties": {
+                        "SandboxId": "RETAIL",
+                        "UserTokens": [xbl_token],
+                    },
+                    "RelyingParty": "urn:xbox:services",
+                    "TokenType": "JWT",
+                }))
+                .send()
+                .await
+                .map_err(|e| format!("XSTS 认证失败：{e}"))?;
+            let text = resp.text().await.map_err(|e| format!("XSTS 读取失败：{e}"))?;
+            match serde_json::from_str(&text) {
+                Ok(v) => {
+                    got = Some(v);
+                    break;
+                }
+                Err(_) => {
+                    println!("XSTS 第 {} 次响应非 JSON（{} B），重试……", attempt + 1, text.len());
+                }
+            }
+        }
+        got.ok_or("XSTS 连续返回异常响应——请稍后重试或换网络环境")?
+    };
     let xsts_token = xsts
         .get("Token")
         .and_then(|x| x.as_str())
@@ -223,20 +239,35 @@ async fn finish_login(
             }
         })?;
 
-    // 3) Minecraft services token
-    let mc: serde_json::Value = client
-        .post("https://api.minecraftservices.com/authentication/login_with_xbox")
-        .json(&serde_json::json!({
-            "identityToken": format!("XBL3.0 x={uhs};{xsts_token}"),
-        }))
-        .send()
-        .await
-        .map_err(|e| format!("Minecraft 登录失败：{e}"))?
-        .error_for_status()
-        .map_err(|e| format!("Minecraft 登录被拒绝：{e}"))?
-        .json()
-        .await
-        .map_err(|e| format!("MC token 解析失败：{e}"))?;
+    // 3) Minecraft services token（同样宽松解析 + 重试）
+    let mc: serde_json::Value = {
+        let mut got = None;
+        for attempt in 0..3u32 {
+            if attempt > 0 {
+                tokio::time::sleep(Duration::from_secs(3 * attempt as u64)).await;
+            }
+            let resp = client
+                .post("https://api.minecraftservices.com/authentication/login_with_xbox")
+                .json(&serde_json::json!({
+                    "identityToken": format!("XBL3.0 x={uhs};{xsts_token}"),
+                }))
+                .send()
+                .await
+                .map_err(|e| format!("Minecraft 登录失败：{e}"))?;
+            let status = resp.status();
+            let text = resp.text().await.map_err(|e| format!("MC 读取失败：{e}"))?;
+            match serde_json::from_str::<serde_json::Value>(&text) {
+                Ok(v) if status.is_success() => {
+                    got = Some(v);
+                    break;
+                }
+                _ => {
+                    println!("MC token 第 {} 次异常（HTTP {}，{} B），重试……", attempt + 1, status.as_u16(), text.len());
+                }
+            }
+        }
+        got.ok_or("MC token 连续异常——请稍后重试")?
+    };
     let mc_access = mc
         .get("access_token")
         .and_then(|x| x.as_str())
