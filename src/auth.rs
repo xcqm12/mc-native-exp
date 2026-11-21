@@ -199,7 +199,7 @@ async fn finish_login(
         let mut got = None;
         for attempt in 0..3u32 {
             if attempt > 0 {
-                tokio::time::sleep(Duration::from_secs(3 * attempt as u64)).await;
+                tokio::time::sleep(Duration::from_secs(10 * attempt as u64)).await;
             }
             let resp = client
                 .post("https://xsts.auth.xboxlive.com/xsts/authorize")
@@ -208,13 +208,15 @@ async fn finish_login(
                         "SandboxId": "RETAIL",
                         "UserTokens": [xbl_token],
                     },
-                    "RelyingParty": "urn:xbox:services",
+                    "RelyingParty": "rp://api.minecraftservices.com/",
                     "TokenType": "JWT",
                 }))
                 .send()
                 .await
                 .map_err(|e| format!("XSTS 认证失败：{e}"))?;
+            let status = resp.status();
             let text = resp.text().await.map_err(|e| format!("XSTS 读取失败：{e}"))?;
+            println!("XSTS HTTP {}（{} B）", status.as_u16(), text.len());
             match serde_json::from_str(&text) {
                 Ok(v) => {
                     got = Some(v);
