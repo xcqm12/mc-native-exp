@@ -1,4 +1,5 @@
 /target/
+/out/
 /data/
 /auth.log
 /*.log
