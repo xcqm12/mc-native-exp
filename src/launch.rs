@@ -307,8 +307,11 @@ pub async fn run(
         let _ = h.join();
     }
     let log = std::fs::read_to_string(&log_path).unwrap_or_default();
+    // quilt 等把 log4j 输出重定向到 game/logs/latest.log（stdout 为空）
+    let game_log = std::fs::read_to_string(game_dir.join("logs").join("latest.log")).unwrap_or_default();
+    let combined = format!("{log}{game_log}");
     let ok_markers = ["Backend library: LWJGL", "Setting user:", "OpenAL initialized", "Sound engine started"];
-    let hit = ok_markers.iter().any(|m| log.contains(m));
+    let hit = ok_markers.iter().any(|m| combined.contains(m));
     println!("smoke 判定：{}（日志 {} 行）", if hit { "✅ 已进入游戏引擎初始化" } else { "⚠ 未命中启动标记" }, log.lines().count());
     println!("日志：{}", log_path.display());
     if !hit {

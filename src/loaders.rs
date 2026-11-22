@@ -163,9 +163,14 @@ async fn install_via_installer(
     let mut cmd = tokio::process::Command::new(&java);
     cmd.arg("-jar").arg(&installer);
     match loader {
-        "fabric" | "quilt" => {
+        "fabric" => {
             cmd.args(["client", "-dir"]).arg(data)
                 .args(["-mcversion", mc]).args(["-loader", &lv]);
+        }
+        "quilt" => {
+            // quilt 安装器 CLI 与 fabric 不同：install client <mc> [loader] --install-dir=<dir>
+            cmd.args(["install", "client", mc, &lv])
+                .arg(format!("--install-dir={}", data.display()));
         }
         _ => {
             cmd.arg("--installClient").arg(data);
@@ -355,7 +360,14 @@ fn find_installed(data: &Path, game_dir: &Path, loader: &str, lv: &str) -> Resul
                     continue;
                 }
                 let name = e.file_name().to_string_lossy().to_string();
-                if !name.contains(loader) && !name.contains("forge") && !name.contains("neoforge") {
+                // 严格按 loader 标记匹配（装 quilt 不得误认 forge 目录）
+                let marker = match loader {
+                    "fabric" => "fabric-loader",
+                    "quilt" => "quilt-loader",
+                    "forge" => "-forge-",
+                    _ => "-neoforge-",
+                };
+                if !name.contains(marker) {
                     continue;
                 }
                 if !p.join(format!("{name}.json")).exists() {
