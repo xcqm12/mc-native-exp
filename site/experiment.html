@@ -35,7 +35,7 @@ code{font-family:Consolas,monospace;background:rgba(95,232,255,.08);padding:1px 
   <h1>mc-native-exp · 原生启动实验</h1>
   <div class="sub">
     围绕一个问题做实验：拿到官方全套 Minecraft 文件与正版账号后，启动能否不依赖 JVM？<br>
-    当前版本 <code>v0.0.1.beta</code>（版本方案：patch 逐次 +1 至 .9 后进位，全程带 beta 后缀）。
+    当前版本 <code>v0.0.2.beta</code>（版本方案：patch 逐次 +1 至 .9 后进位，全程带 beta 后缀）。
   </div>
 
   <div class="card">
@@ -49,7 +49,7 @@ code{font-family:Consolas,monospace;background:rgba(95,232,255,.08);padding:1px 
   <div class="card">
     <h2>② 四大模组加载器自动安装</h2>
     <ul>
-      <li><code>install fabric 1.21.4</code> / <code>install quilt …</code> — meta API 直装，无需 Java</li>
+      <li><code>install fabric|quilt|neoforge|forge &lt;mc&gt;</code> — 统一安装器路线 + 自动 Adoptium JRE；<b>Fabric 1.21.4 已实测启动进入游戏引擎初始化</b></li>
       <li><code>install neoforge …</code> / <code>install forge …</code> — 官方安装器 + 自动下载 Adoptium JRE 跑处理器</li>
       <li>安装全部写入项目 <code>data\</code>，不碰系统目录；<code>launch &lt;id&gt;</code> 正版会话启动（G1 优化参数 + smoke 模式）</li>
       <li>OptiFine / LiteLoader（补丁型 / 停更）不在自动安装范围</li>
@@ -66,7 +66,7 @@ code{font-family:Consolas,monospace;background:rgba(95,232,255,.08);padding:1px 
   </div>
 
   <a class="dl" href="https://github.com/xcqm12/mc-native-exp" target="_blank" rel="noopener">GitHub 仓库</a>
-  <a class="dl" href="https://github.com/xcqm12/mc-native-exp/releases/tag/v0.0.1.beta" target="_blank" rel="noopener">下载 v0.0.1.beta（Windows x64）</a>
+  <a class="dl" href="https://github.com/xcqm12/mc-native-exp/releases/tag/v0.0.2.beta" target="_blank" rel="noopener">下载 v0.0.2.beta（Windows x64）</a>
 
   <div class="foot">
     仅用于技术研究；下载物只做字节级解析、从不执行；不绕过任何认证。<br>
