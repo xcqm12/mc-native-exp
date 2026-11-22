@@ -120,6 +120,8 @@ async fn run(cli: Cli) -> Result<(), String> {
 
     let client = reqwest::Client::builder()
         .user_agent("mc-native-exp/0.1 (experimental; personal use)")
+        // 部分站点（宝塔 nginx）h2 异常：本实验统一走 http/1.1
+        .http1_only()
         .timeout(std::time::Duration::from_secs(120))
         .build()
         .map_err(|e| format!("HTTP client：{e}"))?;

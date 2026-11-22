@@ -142,6 +142,20 @@ async fn install_via_installer(
     std::fs::create_dir_all(&dl_dir).map_err(|e| format!("{e}"))?;
     let installer = dl_dir.join(format!("{loader}-{lv}-installer.jar"));
     download_file(client, &url, &installer, &format!("{loader} installer")).await?;
+    // 弱链路截断防御：校验 zip 魔数，坏文件删除重下一次
+    let mut magic_ok = false;
+    if installer.exists() {
+        let mut head = [0u8; 4];
+        if let Ok(mut f) = std::fs::File::open(&installer) {
+            use std::io::Read as _;
+            let _ = f.read_exact(&mut head);
+            magic_ok = &head == b"PK";
+        }
+    }
+    if !magic_ok {
+        let _ = std::fs::remove_file(&installer);
+        download_file(client, &url, &installer, &format!("{loader} installer 重下")).await?;
+    }
 
     // forge/neoforge：预下载安装器 libraries（其内部下载器无重试，绕开）
     if matches!(loader, "forge" | "neoforge") {
@@ -198,33 +212,49 @@ async fn install_via_installer(
 
 /* ── Forge / NeoForge：官方安装器 + 自动 JRE ───────────────── */
 
-/// NeoForge 最新版：多源回退（BMCLAPI metadata → 官方 metadata → 官方 API）。
+const NEOFORGE_RELAY: &str = "https://mcdles.us.ci/neoforge-relay";
+
+/// NeoForge 最新版：多源回退（分发站中转 → BMCLAPI metadata → 官方 metadata → 官方 API）。
 /// 版本号形如 <mc>.<build>。
 async fn latest_neoforge(client: &reqwest::Client, mc: &str) -> Result<String, String> {
-    // 1) BMCLAPI 镜像 metadata
-    let meta_urls = [
-        "https://bmclapi2.bangbang93.com/maven/net/neoforged/neoforge/maven-metadata.xml".to_string(),
-        "https://maven.neoforged.net/releases/net/neoforged/neoforge/maven-metadata.xml".to_string(),
+    // 0) 分发站中转（maven.neoforged.net 从部分大陆网络不可达，服务器中转稳定）
+    let mut meta_urls = vec![
+        format!("{NEOFORGE_RELAY}/releases/net/neoforged/neoforge/maven-metadata.xml"),
     ];
+    meta_urls.push("https://bmclapi2.bangbang93.com/maven/net/neoforged/neoforge/maven-metadata.xml".to_string());
+    meta_urls.push("https://maven.neoforged.net/releases/net/neoforged/neoforge/maven-metadata.xml".to_string());
+    // NeoForge 版本号 = MC 版本去掉开头 1.：1.21.4 → 21.4.x，1.20.2 → 20.2.x
+    let nf_prefix = mc.strip_prefix("1.").unwrap_or(mc).to_string();
     for url in &meta_urls {
         for attempt in 0..2u32 {
             if attempt > 0 {
                 tokio::time::sleep(std::time::Duration::from_secs(3)).await;
             }
-            if let Ok(resp) = client.get(url).send().await {
-                if let Ok(text) = resp.text().await {
+            match client.get(url).send().await {
+                Err(e) => {
+                    println!("NeoForge 版本源 {} 不可达（{}）", url.split('/').nth(2).unwrap_or("?"), {
+                        let mut msg = e.to_string();
+                        if msg.len() > 90 {
+                            msg.truncate(90);
+                        }
+                        msg
+                    });
+                    continue;
+                }
+                Ok(resp) => {
+                    let text = resp.text().await.unwrap_or_default();
+                    println!("  [debug] {} -> {} B", url.split('/').nth(2).unwrap_or("?"), text.len());
                     if let Some(rel) = regex_like_release(&text) {
-                        if rel.starts_with(mc) {
+                        if rel.starts_with(&nf_prefix) {
                             return Ok(rel);
                         }
                     }
-                    // metadata 全量版本列表里挑 <mc> 开头的最后一个
-                    if let Some(v) = last_version_matching(&text, mc) {
+                    if let Some(v) = last_version_matching(&text, &nf_prefix) {
                         return Ok(v);
                     }
+                    println!("NeoForge metadata 无匹配 {} 的版本（{} B）", nf_prefix, text.len());
                 }
             }
-            println!("NeoForge 版本源 {} 不可达，重试/换源……", url.split('/').nth(2).unwrap_or("?"));
         }
     }
     // 2) 官方 API
@@ -322,7 +352,7 @@ async fn installer_url(
     }
     if loader == "neoforge" {
         return Ok(format!(
-            "https://maven.neoforged.net/releases/net/neoforged/neoforge/{lv}/neoforge-{lv}-installer.jar"
+            "{NEOFORGE_RELAY}/releases/net/neoforged/neoforge/{lv}/neoforge-{lv}-installer.jar"
         ));
     }
     // Forge：installer 直链（maven.cloudflare / files.minecraftforge.net）
@@ -502,15 +532,29 @@ fn final_lib_url(name: &str, artifact_url: &str, lib_declared_url: &str) -> Stri
         return format!("https://maven.minecraftforge.net/{rel}");
     }
     if ga == "net.neoforged" {
-        return format!("https://maven.neoforged.net/releases/{rel}");
+        // 本网络到 maven.neoforged.net 不可达：走分发站中转
+        return format!("https://mcdles.us.ci/neoforge-relay/releases/{rel}");
     }
-    if !lib_declared_url.is_empty() {
-        return format!("{}/{rel}", lib_declared_url.trim_end_matches('/'));
+    // 所有声明走 maven.neoforged.net 的库（第三方 asm/jline/commons 等）一律改写为中转
+    let mut declared = lib_declared_url.trim_end_matches('/').to_string();
+    if declared.starts_with("https://maven.neoforged.net") {
+        declared = "https://mcdles.us.ci/neoforge-relay/releases".to_string();
     }
-    if !artifact_url.is_empty() {
-        return artifact_url.to_string();
+    let mut a_url = artifact_url.to_string();
+    if a_url.starts_with("https://maven.neoforged.net") {
+        a_url = a_url.replacen("https://maven.neoforged.net", "https://mcdles.us.ci/neoforge-relay", 1);
     }
-    crate::profile::maven_url(name)
+    if !declared.is_empty() {
+        return format!("{declared}/{rel}");
+    }
+    if !a_url.is_empty() {
+        return a_url;
+    }
+    // 空声明兜底：Mojang 自家库走官方镜像，其余走 Maven Central
+    if ga == "com.mojang" {
+        return crate::profile::maven_url(name);
+    }
+    format!("https://repo1.maven.org/maven2/{rel}")
 }
 
 fn maven_rel_slash(name: &str) -> String {

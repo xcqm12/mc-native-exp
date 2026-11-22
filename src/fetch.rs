@@ -209,19 +209,52 @@ async fn fetch_to_file(
     dest: &Path,
     sha1_hex: &str,
 ) -> Result<u64, String> {
-    let resp = client
-        .get(url)
-        .send()
-        .await
-        .and_then(|r| r.error_for_status())
-        .map_err(|e| format!("HTTP {e}"))?;
+    // 断点续传：.part 已有内容则带 Range 续传（弱链路多次重试可收敛）
     let tmp = dest.with_extension("part");
-    let mut file = tokio::fs::File::create(&tmp)
-        .await
-        .map_err(|e| format!("创建临时文件失败：{e}"))?;
     let mut hasher = Sha1::new();
-    let mut stream = resp.bytes_stream();
+    let mut start = 0u64;
+    let mut req = client.get(url);
+    if tmp.exists() {
+        start = std::fs::metadata(&tmp).map(|m| m.len()).unwrap_or(0);
+        if start > 0 {
+            req = req.header("Range", format!("bytes={start}-"));
+            let mut f = std::fs::File::open(&tmp).map_err(|e| format!("{e}"))?;
+            let mut buf = vec![0u8; 256 * 1024];
+            loop {
+                let n = f.read(&mut buf).map_err(|e| format!("{e}"))?;
+                if n == 0 {
+                    break;
+                }
+                hasher.update(&buf[..n]);
+            }
+        }
+    }
+    let resp = req.send().await.map_err(|e| format!("HTTP {e}"))?;
+    let status = resp.status();
+    let content_length = resp.content_length().unwrap_or(0);
     use futures::StreamExt;
+    let mut stream = resp.bytes_stream();
+    let mut file;
+    if start > 0 && status.as_u16() == 206 {
+        file = tokio::fs::OpenOptions::new()
+            .append(true)
+            .open(&tmp)
+            .await
+            .map_err(|e| format!("打开续传文件失败：{e}"))?;
+    } else {
+        if start > 0 {
+            // 服务端不支持 Range（200 全量）：从头重来
+            hasher = Sha1::new();
+            start = 0;
+        }
+        if status.as_u16() == 404 || status.as_u16() == 410 {
+            // 目标不存在：保留 .part 无意义
+            let _ = std::fs::remove_file(&tmp);
+            return Err(format!("HTTP {status}"));        }
+        file = tokio::fs::File::create(&tmp)
+            .await
+            .map_err(|e| format!("创建临时文件失败：{e}"))?;
+    }
     let mut nbytes = 0u64;
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|e| format!("传输中断：{e}"))?;
@@ -231,8 +264,17 @@ async fn fetch_to_file(
     }
     file.flush().await.map_err(|e| e.to_string())?;
     drop(file);
+    // 206：content_length 是本次增量长度；200：是全量。不符 = 传输不完整（保留 .part 续传）
+    let partial = status.as_u16() == 206;
+    if content_length > 0 && nbytes != content_length {
+        let total = if partial { start + nbytes } else { nbytes };
+        return Err(format!(
+            "传输不完整（{total}/{content_length} B，增量 {nbytes}）"
+        ));
+    }
     let got = hex::encode(hasher.finalize());
     if !sha1_hex.is_empty() && got != sha1_hex {
+        // 哈希不符 = .part 已不可信（Range/全量混写等）：删除，下轮全新下载
         let _ = std::fs::remove_file(&tmp);
         return Err(format!("SHA1 不匹配（期望 {sha1_hex}，得到 {got}）"));
     }
