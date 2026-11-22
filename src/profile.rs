@@ -40,9 +40,10 @@ fn merge_version(parent: &Value, child: &Value) -> Value {
                     libs.extend(val.as_array().cloned().unwrap_or_default());
                     out["libraries"] = Value::Array(libs);
                 }
-                "args" => {
+                "arguments" => {
+                    // 子 game 增量拼在父全量之后（forge 子 JSON 只带 --launchTarget 等）
                     let mut game = out
-                        .pointer("/args/game")
+                        .pointer("/arguments/game")
                         .and_then(|x| x.as_array())
                         .cloned()
                         .unwrap_or_default();
@@ -55,9 +56,9 @@ fn merge_version(parent: &Value, child: &Value) -> Value {
                     let jvm = val
                         .pointer("/jvm")
                         .cloned()
-                        .or_else(|| out.pointer("/args/jvm").cloned())
+                        .or_else(|| out.pointer("/arguments/jvm").cloned())
                         .unwrap_or(Value::Null);
-                    out["args"] = serde_json::json!({ "game": game, "jvm": jvm });
+                    out["arguments"] = serde_json::json!({ "game": game, "jvm": jvm });
                 }
                 _ => {
                     out[k] = val.clone();

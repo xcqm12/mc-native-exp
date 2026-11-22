@@ -193,8 +193,36 @@ async fn install_via_installer(
 
 /* ── Forge / NeoForge：官方安装器 + 自动 JRE ───────────────── */
 
-/// NeoForge 最新版（maven metadata：版本号形如 <mc>.<build>）。
+/// NeoForge 最新版：多源回退（BMCLAPI metadata → 官方 metadata → 官方 API）。
+/// 版本号形如 <mc>.<build>。
 async fn latest_neoforge(client: &reqwest::Client, mc: &str) -> Result<String, String> {
+    // 1) BMCLAPI 镜像 metadata
+    let meta_urls = [
+        "https://bmclapi2.bangbang93.com/maven/net/neoforged/neoforge/maven-metadata.xml".to_string(),
+        "https://maven.neoforged.net/releases/net/neoforged/neoforge/maven-metadata.xml".to_string(),
+    ];
+    for url in &meta_urls {
+        for attempt in 0..2u32 {
+            if attempt > 0 {
+                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+            }
+            if let Ok(resp) = client.get(url).send().await {
+                if let Ok(text) = resp.text().await {
+                    if let Some(rel) = regex_like_release(&text) {
+                        if rel.starts_with(mc) {
+                            return Ok(rel);
+                        }
+                    }
+                    // metadata 全量版本列表里挑 <mc> 开头的最后一个
+                    if let Some(v) = last_version_matching(&text, mc) {
+                        return Ok(v);
+                    }
+                }
+            }
+            println!("NeoForge 版本源 {} 不可达，重试/换源……", url.split('/').nth(2).unwrap_or("?"));
+        }
+    }
+    // 2) 官方 API
     let url = "https://maven.neoforged.net/api/maven/versions/releases/net/neoforged/neoforge";
     let v: Value = client
         .get(url)
@@ -223,17 +251,44 @@ async fn latest_neoforge(client: &reqwest::Client, mc: &str) -> Result<String, S
         .ok_or_else(|| format!("NeoForge 没有 {mc} 的版本"))
 }
 
+/// 从 maven-metadata.xml 文本里挑以 mc 开头的最后一个 <version>。
+fn last_version_matching(text: &str, mc: &str) -> Option<String> {
+    let mut last = None;
+    let mut rest = text;
+    while let Some(pos) = rest.find("<version>") {
+        let start = pos + "<version>".len();
+        let end = rest[start..].find("</version>")? + start;
+        let v = &rest[start..end];
+        if v.starts_with(mc) {
+            last = Some(v.to_string());
+        }
+        rest = &rest[end..];
+    }
+    last
+}
+
 /// Forge 最新版（promotions API：1.21.4 → "51.0.x"）。
 async fn latest_forge(client: &reqwest::Client, mc: &str) -> Result<String, String> {
-    let v: Value = client
-        .get("https://files.minecraftforge.net/net/minecraftforge/forge/promotions_slim.json")
-        .send()
-        .await
-        .and_then(|r| r.error_for_status())
-        .map_err(|e| format!("Forge promotions：{e}"))?
-        .json()
-        .await
-        .map_err(|e| format!("{e}"))?;
+    // files.minecraftforge.net 偶发不可达：BMCLAPI 镜像同一文件
+    let urls = [
+        "https://files.minecraftforge.net/net/minecraftforge/forge/promotions_slim.json".to_string(),
+        "https://bmclapi2.bangbang93.com/net/minecraftforge/forge/promotions_slim.json".to_string(),
+    ];
+    let mut v: Value = Value::Null;
+    for url in &urls {
+        if let Ok(resp) = client.get(url).send().await {
+            if let Ok(text) = resp.text().await {
+                if let Ok(parsed) = serde_json::from_str::<Value>(&text) {
+                    v = parsed;
+                    break;
+                }
+            }
+        }
+        println!("Forge promotions {} 不可达，换源……", url.split('/').nth(2).unwrap_or("?"));
+    }
+    if v.is_null() {
+        return Err("Forge promotions 全部源不可达".into());
+    }
     let key = format!("{mc}-latest");
     v.pointer("/promos")
         .and_then(|p| p.get(&key))
@@ -367,18 +422,27 @@ async fn predownload_installer_libs(
                         continue;
                     }
                     let name = lib.get("name").and_then(|x| x.as_str()).unwrap_or_default().to_string();
+                    // forge/neoforge 自产 :client/:server 条目是安装器内嵌数据
+                    // （非 maven artifact，无下载文件）——跳过，安装器处理时自行释放
+                    let lp: Vec<&str> = name.split(':').collect();
+                    if lp.first().copied() == Some("net.minecraftforge") || lp.first().copied() == Some("net.neoforged") {
+                        if lp.len() >= 4 && matches!(lp[3], "client" | "server") {
+                            continue;
+                        }
+                    }
                     let dl = lib.get("downloads");
                     let artifact = dl
                         .and_then(|d| d.get("artifact"))
                         .cloned()
                         .unwrap_or(Value::Null);
                     if let Some(p) = crate::fetch::lib_path_of(&artifact) {
-                        let url = artifact
+                        let a_url = artifact
                             .get("url")
                             .and_then(|x| x.as_str())
                             .unwrap_or_default()
                             .to_string();
-                        let url = if url.is_empty() { crate::profile::maven_url(&name) } else { url };
+                        let lib_url = lib.get("url").and_then(|x| x.as_str()).unwrap_or_default().to_string();
+                        let url = final_lib_url(&name, &a_url, &lib_url);
                         if !url.is_empty() {
                             jobs.push((
                                 url,
@@ -388,11 +452,10 @@ async fn predownload_installer_libs(
                             ));
                         }
                     } else if !name.is_empty() {
-                        // 只有 maven 坐标（老版 Forge）：路径推出来直接下
-                        let p = maven_path(&name);
+                        let lib_url = lib.get("url").and_then(|x| x.as_str()).unwrap_or_default().to_string();
                         jobs.push((
-                            crate::profile::maven_url(&name),
-                            lib_root.join(p),
+                            final_lib_url(&name, "", &lib_url),
+                            lib_root.join(maven_path(&name)),
                             String::new(),
                             0,
                         ));
@@ -415,6 +478,42 @@ async fn predownload_installer_libs(
     let (f, s, _) = fetch::download_batch(client, jobs, "installer libs").await?;
     println!("安装器 libraries：新下 {f}，跳过 {s}");
     Ok(())
+}
+
+/// forge/neoforge 自产库只在自家 maven：GA 精确覆盖（声明 URL 常错指
+/// libraries.minecraft.net，404 "The specified blob does not exist" 即此因）。
+fn final_lib_url(name: &str, artifact_url: &str, lib_declared_url: &str) -> String {
+    let parts: Vec<&str> = name.split(':').collect();
+    let ga = parts.first().copied().unwrap_or("");
+    let rel = maven_rel_slash(name);
+    if ga == "net.minecraftforge" && parts.get(1).copied() == Some("forge") {
+        return format!("https://maven.minecraftforge.net/{rel}");
+    }
+    if ga == "net.neoforged" {
+        return format!("https://maven.neoforged.net/releases/{rel}");
+    }
+    if !lib_declared_url.is_empty() {
+        return format!("{}/{rel}", lib_declared_url.trim_end_matches('/'));
+    }
+    if !artifact_url.is_empty() {
+        return artifact_url.to_string();
+    }
+    crate::profile::maven_url(name)
+}
+
+fn maven_rel_slash(name: &str) -> String {
+    let parts: Vec<&str> = name.split(':').collect();
+    if parts.len() < 3 {
+        return name.to_string();
+    }
+    let (g, a, ver) = (parts[0], parts[1], parts[2]);
+    let classifier = parts.get(3).copied().unwrap_or("");
+    let file = if classifier.is_empty() {
+        format!("{a}-{ver}.jar")
+    } else {
+        format!("{a}-{ver}-{classifier}.jar")
+    };
+    format!("{}/{a}/{ver}/{file}", g.replace('.', "/"))
 }
 
 fn maven_path(name: &str) -> String {

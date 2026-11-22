@@ -35,7 +35,7 @@ pub async fn run(
     // 按 maven GA 去重且 loader（子 profile，列表靠后）优先——否则同库不同版本
     // 并存会触发 fabric loader 的 duplicate classes 检查直接拒绝启动。
     let mut cp = Vec::new();
-    let mut seen_ga: std::collections::HashSet<String> = Default::default();
+    let mut seen_ga: std::collections::HashMap<String, String> = Default::default();
     if let Some(libs) = v.get("libraries").and_then(|x| x.as_array()) {
         for lib in libs.iter().rev() {
             if !crate::fetch::rules_allow_windows(lib.get("rules")) {
@@ -49,8 +49,15 @@ pub async fn run(
             }
             let ga: String = parts.first().unwrap_or(&"").to_string()
                 + ":" + parts.get(1).unwrap_or(&"");
-            if !ga.is_empty() && !seen_ga.insert(ga.clone()) {
-                continue; // 子 profile 已提供该库
+            let version = parts.get(2).copied().unwrap_or("");
+            // 同 GA 不同版本 → 子 profile 优先（跳过父版本，防 duplicate classes）；
+            // 同 GA 同版本共存（forge client/universal/shim 三 jar 全必需）
+            if let Some(kept) = seen_ga.get(&ga) {
+                if kept != version {
+                    continue;
+                }
+            } else {
+                seen_ga.insert(ga.clone(), version.to_string());
             }
             let dl = lib.get("downloads");
             let artifact = dl.and_then(|d| d.get("artifact")).cloned().unwrap_or(Value::Null);
@@ -76,8 +83,11 @@ pub async fn run(
         }
         cp.reverse(); // 恢复原顺序（父在前）
     }
-    // client jar：继承链上每个有 downloads.client 的
-    let mut cur: Option<Value> = Some(v.clone());
+    // client jar：继承链上每个有 downloads.client 的。
+    // Bootstrap 系（ForgeBootstrap/BootstrapLauncher）例外：原版 jar 绝不能进
+    // classpath（模块冲突），patched client 由 forge 自身 library 提供。
+    let bootstrap_like = id.contains("forge") || id.contains("neoforge");
+    let mut cur: Option<Value> = if bootstrap_like { None } else { Some(v.clone()) };
     let mut guard = 0;
     while cur.is_some() && guard < 5 {
         let node = cur.take().unwrap();
@@ -130,7 +140,7 @@ pub async fn run(
     std::fs::create_dir_all(&game_dir).map_err(|e| format!("{e}"))?;
     let assets_root = data.join("assets");
 
-    let mut ph = |k: &str, val: &str| (format!("{{{k}}}"), val.to_string());
+    let mut ph = |k: &str, val: &str| (format!("${{{k}}}"), val.to_string());
     let placeholders: Vec<(String, String)> = vec![
         ph("auth_player_name", &session.player_name),
         ph("auth_uuid", &session.player_uuid),
@@ -166,7 +176,7 @@ pub async fn run(
         "-Djava.library.path=".to_string() + &natives.to_string_lossy(),
         format!("-Dio.netty.native.workdir={}", natives.to_string_lossy()),
     ];
-    if let Some(arr) = v.pointer("/args/jvm").and_then(|x| x.as_array()) {
+    if let Some(arr) = v.pointer("/arguments/jvm").and_then(|x| x.as_array()) {
         for item in arr {
             match item {
                 Value::String(s) => {
@@ -185,7 +195,7 @@ pub async fn run(
 
     // 游戏参数
     let mut game: Vec<String> = Vec::new();
-    if let Some(arr) = v.pointer("/args/game").and_then(|x| x.as_array()) {
+    if let Some(arr) = v.pointer("/arguments/game").and_then(|x| x.as_array()) {
         let mut expect_value = false;
         for item in arr {
             match item {
@@ -231,6 +241,9 @@ pub async fn run(
         game.extend(legacy.split_whitespace().map(sub));
     }
 
+    println!("jvm: {jvm:?}");
+    println!("main: {main_class}");
+    println!("game: {game:?}");
     let mut cmd = std::process::Command::new(&java);
     cmd.args(&jvm)
         .arg("-cp")

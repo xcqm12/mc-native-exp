@@ -62,7 +62,8 @@ mc-native-exp report
 | 微软正版认证 | ✅ 设备码 → XBL → XSTS → entitlements 全链（SevenZeroMeow 实测通过） |
 | Fabric 1.21.4 自动安装 | ✅ 安装器路线，3564 文件/322MB |
 | **Fabric 启动 smoke** | ✅ **进入游戏引擎初始化**（1688 行日志，LWJGL/OpenAL/glfw 全就位） |
-| NeoForge / Forge 安装 | 代码完成；实测时国际网络到 maven 主机拥堵，待网络恢复复测 |
+| Forge 1.21.4 自动安装+启动 | ✅ 安装器路线 + GA 仓库覆盖（forge 自产库在自家 maven）+ :client/:server 内嵌数据跳过 + Bootstrap 系不放原版 jar → smoke 进入引擎初始化 |
+| NeoForge 安装 | 代码完成（多源回退）；实测时段 maven.neoforged.net 全源不可达，待网络窗口 |
 | class 解析（26.3） | ✅ 11383/11383 全部解析（major 69 = Java 25） |
 | 字节码解释器 | ✅ 首堵墙 = StringConcatFactory（invokedynamic ×32134 / 依赖闭包 jar 内 10662 类 + JDK 482 + 第三方 17134 处）——脱 JVM 差距的量化数据 |
 
