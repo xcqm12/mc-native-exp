@@ -8,6 +8,8 @@
 
 mod auth;
 mod classparse;
+mod gui;
+mod theme;
 mod fetch;
 mod interp;
 mod jre;
@@ -66,6 +68,9 @@ enum Cmd {
     },
     /// 汇总全部数据生成 REPORT.md
     Report,
+    /// 控制台交互菜单（默认双击进 GUI）
+    Menu,
+    /// 控制台交互菜单（默认双击进 GUI）
     /// 列出实验支持的模组加载器
     Loaders,
     /// 自动安装模组加载器（fabric/quilt/neoforge/forge）到项目 data 目录
@@ -100,14 +105,14 @@ fn main() {
         .enable_all()
         .build()
         .expect("tokio runtime");
-    let res = rt.block_on(run(cli));
+    let res = rt.block_on(run(cli, rt.handle().clone()));
     if let Err(e) = res {
         eprintln!("错误：{e}");
         std::process::exit(1);
     }
 }
 
-async fn run(cli: Cli) -> Result<(), String> {
+async fn run(cli: Cli, handle: tokio::runtime::Handle) -> Result<(), String> {
     // 数据目录：显式绝对路径尊重之；显式相对路径基于 CWD；
     // 未传 --data（双击启动）固定 exe 目录旁 data\，不受启动位置影响
     let data = match &cli.data {
@@ -132,8 +137,12 @@ async fn run(cli: Cli) -> Result<(), String> {
         .map_err(|e| format!("HTTP client：{e}"))?;
 
     let Some(cmd) = cli.cmd else {
-        return interactive_menu(&client, &data).await;
+        // 双击启动：进 GUI
+        return gui::run_gui(handle, data);
     };
+    if let Cmd::Menu = cmd {
+        return interactive_menu(&client, &data).await;
+    }
     run_cmd(&client, &data, cmd).await
 }
 
@@ -273,6 +282,7 @@ async fn run_cmd(
         Cmd::Scan { version, all } => scan::run(data, version.as_deref(), all),
         Cmd::Interp { version } => interp::run(data, version.as_deref()),
         Cmd::Report => report::run(data),
+        Cmd::Menu => interactive_menu(client, data).await,
         Cmd::Loaders => {
             println!("实验支持的加载器：{}", loaders::SUPPORTED.join(" / "));
             println!("说明：fabric/quilt/neoforge/forge 统一安装器路线 + 自动 JRE。");

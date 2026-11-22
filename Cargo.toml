@@ -4,7 +4,12 @@ version = "0.0.6-beta"
 edition = "2021"
 description = "实验：从官方源下载全套 Minecraft 文件 + 四大模组加载器自动安装（Fabric/Quilt/NeoForge/Forge）+ Rust 字节码解释器原型（需微软正版账号）。实验项目，可能不稳定。"
 
+[build-dependencies]
+winresource = "0.1"
+
 [dependencies]
+eframe = "0.29"
+image = { version = "0.25", default-features = false, features = ["png"] }
 clap = { version = "4", features = ["derive"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "io-util", "time", "process"] }

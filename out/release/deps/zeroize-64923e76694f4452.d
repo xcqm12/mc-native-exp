@@ -1,0 +1,12 @@
+F:\mc-native-exp\out\release\deps\zeroize-64923e76694f4452.d: C:\Users\Administrator\.cargo\registry\src\github.com-25cdd57fae9f0462\zeroize-1.9.2\src\lib.rs C:\Users\Administrator\.cargo\registry\src\github.com-25cdd57fae9f0462\zeroize-1.9.2\src\x86.rs C:\Users\Administrator\.cargo\registry\src\github.com-25cdd57fae9f0462\zeroize-1.9.2\src\barrier.rs C:\Users\Administrator\.cargo\registry\src\github.com-25cdd57fae9f0462\zeroize-1.9.2\src\bulk.rs C:\Users\Administrator\.cargo\registry\src\github.com-25cdd57fae9f0462\zeroize-1.9.2\src\stack.rs C:\Users\Administrator\.cargo\registry\src\github.com-25cdd57fae9f0462\zeroize-1.9.2\src\../README.md
+
+F:\mc-native-exp\out\release\deps\libzeroize-64923e76694f4452.rlib: C:\Users\Administrator\.cargo\registry\src\github.com-25cdd57fae9f0462\zeroize-1.9.2\src\lib.rs C:\Users\Administrator\.cargo\registry\src\github.com-25cdd57fae9f0462\zeroize-1.9.2\src\x86.rs C:\Users\Administrator\.cargo\registry\src\github.com-25cdd57fae9f0462\zeroize-1.9.2\src\barrier.rs C:\Users\Administrator\.cargo\registry\src\github.com-25cdd57fae9f0462\zeroize-1.9.2\src\bulk.rs C:\Users\Administrator\.cargo\registry\src\github.com-25cdd57fae9f0462\zeroize-1.9.2\src\stack.rs C:\Users\Administrator\.cargo\registry\src\github.com-25cdd57fae9f0462\zeroize-1.9.2\src\../README.md
+
+F:\mc-native-exp\out\release\deps\libzeroize-64923e76694f4452.rmeta: C:\Users\Administrator\.cargo\registry\src\github.com-25cdd57fae9f0462\zeroize-1.9.2\src\lib.rs C:\Users\Administrator\.cargo\registry\src\github.com-25cdd57fae9f0462\zeroize-1.9.2\src\x86.rs C:\Users\Administrator\.cargo\registry\src\github.com-25cdd57fae9f0462\zeroize-1.9.2\src\barrier.rs C:\Users\Administrator\.cargo\registry\src\github.com-25cdd57fae9f0462\zeroize-1.9.2\src\bulk.rs C:\Users\Administrator\.cargo\registry\src\github.com-25cdd57fae9f0462\zeroize-1.9.2\src\stack.rs C:\Users\Administrator\.cargo\registry\src\github.com-25cdd57fae9f0462\zeroize-1.9.2\src\../README.md
+
+C:\Users\Administrator\.cargo\registry\src\github.com-25cdd57fae9f0462\zeroize-1.9.2\src\lib.rs:
+C:\Users\Administrator\.cargo\registry\src\github.com-25cdd57fae9f0462\zeroize-1.9.2\src\x86.rs:
+C:\Users\Administrator\.cargo\registry\src\github.com-25cdd57fae9f0462\zeroize-1.9.2\src\barrier.rs:
+C:\Users\Administrator\.cargo\registry\src\github.com-25cdd57fae9f0462\zeroize-1.9.2\src\bulk.rs:
+C:\Users\Administrator\.cargo\registry\src\github.com-25cdd57fae9f0462\zeroize-1.9.2\src\stack.rs:
+C:\Users\Administrator\.cargo\registry\src\github.com-25cdd57fae9f0462\zeroize-1.9.2\src\../README.md:
