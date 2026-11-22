@@ -1,6 +1,6 @@
 [package]
 name = "mc-native-exp"
-version = "0.0.5-beta"
+version = "0.0.6-beta"
 edition = "2021"
 description = "实验：从官方源下载全套 Minecraft 文件 + 四大模组加载器自动安装（Fabric/Quilt/NeoForge/Forge）+ Rust 字节码解释器原型（需微软正版账号）。实验项目，可能不稳定。"
 

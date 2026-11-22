@@ -299,6 +299,18 @@ pub async fn run(
         }));
     }
 
+    if smoke_secs == 0 {
+        // 交给用户玩：不自动杀进程，等游戏窗口关闭后自然结束
+        println!("游戏已启动（关闭游戏窗口后本命令自然结束）");
+        let status = child.wait().map_err(|e| format!("等待游戏退出失败：{e}"))?;
+        for h in handles {
+            let _ = h.join();
+        }
+        let code = status.code().unwrap_or(0);
+        println!("游戏退出（code {code}），日志：{}", log_path.display());
+        return if code == 0 { Ok(()) } else { std::process::exit(code) };
+    }
+
     // smoke：等 N 秒 → 检查日志标记 → 杀进程
     std::thread::sleep(std::time::Duration::from_secs(smoke_secs));
     stop.store(true, AtomicOrdering::Relaxed);
@@ -312,7 +324,9 @@ pub async fn run(
     let combined = format!("{log}{game_log}");
     let ok_markers = ["Backend library: LWJGL", "Setting user:", "OpenAL initialized", "Sound engine started"];
     let hit = ok_markers.iter().any(|m| combined.contains(m));
-    println!("smoke 判定：{}（日志 {} 行）", if hit { "✅ 已进入游戏引擎初始化" } else { "⚠ 未命中启动标记" }, log.lines().count());
+    println!("smoke 判定：{}（stdout {} 行 + 游戏日志 {} 行）",
+        if hit { "✅ 已进入游戏引擎初始化" } else { "⚠ 未命中启动标记" },
+        log.lines().count(), game_log.lines().count());
     println!("日志：{}", log_path.display());
     if !hit {
         let tail: Vec<&str> = log.lines().rev().take(25).collect();
