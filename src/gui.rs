@@ -1,5 +1,11 @@
-//! 现代化 GUI（egui/eframe）：登录、模组加载器、内容库（模组/材质/地图/光影/插件，
-//! Modrinth API）、原版下载、设置。后台任务经 tokio spawn_blocking + std mpsc 桥接。
+//! 桌面启动器样式 GUI（egui/eframe）：左侧导航栏 + 顶部标题栏 + 底部状态栏。
+//!
+//! 中文渲染加固：按候选顺序探测 Windows 自带 CJK 字体（微软雅黑/黑体/等线/宋体），
+//! 命中后注入 Proportional 与 Monospace 两个家族的索引 0（Latin 走其 fallback），
+//! 缺字体时打印警告但 GUI 仍可用。
+//!
+//! 页面：主页启动 / 登录 / 加载器 / 内容库（Modrinth）/ 原版 / 设置。
+//! 后台任务：tokio spawn_blocking + std mpsc 桥接，UI 线程零阻塞。
 
 use crate::auth::Session;
 use crate::manifest::{self, Manifest};
@@ -9,6 +15,9 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
 
 const LOGO_PNG: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), r"\brand\logo-512.png"));
+
+const APP_NAME: &str = "mc-native-exp";
+const APP_SUB: &str = "实验启动器 · 可能不稳定";
 
 /* ── 后台任务桥 ─────────────────────────────────────────────── */
 
@@ -23,8 +32,6 @@ pub struct Tasks {
 }
 
 impl Tasks {
-    /// desc：任务描述。闭包在 spawn_blocking 线程执行（tokio 上下文可用，
-    /// 内部以 Handle::current().block_on 驱动 async 函数）。
     fn run<F>(&mut self, desc: impl Into<String>, f: F)
     where
         F: FnOnce(&reqwest::Client, &Path) -> Result<String, String> + Send + 'static,
@@ -39,7 +46,6 @@ impl Tasks {
         });
     }
 
-    /// 回收已完成任务。
     pub fn poll(&mut self) -> Vec<JobResult> {
         let mut done = Vec::new();
         while let Ok(r) = self.rx.try_recv() {
@@ -49,7 +55,7 @@ impl Tasks {
     }
 }
 
-/// 在任务线程里驱动 async fn（spawn_blocking 线程自带 tokio 上下文）。
+/// 在 spawn_blocking 任务线程里驱动 async（线程自带 tokio 上下文）。
 pub fn block_on<F: std::future::Future>(fut: F) -> F::Output {
     tokio::runtime::Handle::current().block_on(fut)
 }
@@ -115,7 +121,6 @@ pub async fn modrinth_search(
     Ok(out)
 }
 
-/// 下载内容包的最新兼容文件到 data/game/<subdir>/。
 pub async fn modrinth_download(
     client: &reqwest::Client,
     ptype: &str,
@@ -159,7 +164,7 @@ pub async fn modrinth_download(
         .map(|(_, _, dir, _)| *dir)
         .unwrap_or("mods");
     let dest = data.join("game").join(sub).join(&file_name);
-    let _ = crate::fetch::download_batch(client, vec![(file_url, dest, String::new(), 0)], slug).await?;
+    crate::fetch::download_batch(client, vec![(file_url, dest, String::new(), 0)], slug).await?;
     Ok(format!("已安装到 game\\{sub}\\{file_name}"))
 }
 
@@ -173,6 +178,52 @@ fn urlencoding_lite(s: &str) -> String {
         }
     }
     out
+}
+
+/* ── 字体 ──────────────────────────────────────────────────── */
+
+/// Windows 自带 CJK 字体候选（按观感优先）。
+const CJK_FONT_CANDIDATES: &[&str] = &[
+    r"C:\Windows\Fonts\msyh.ttc",   // 微软雅黑
+    r"C:\Windows\Fonts\msyhbd.ttc", // 微软雅黑 Bold
+    r"C:\Windows\Fonts\Deng.ttf",   // 等线
+    r"C:\Windows\Fonts\Dengb.ttf",
+    r"C:\Windows\Fonts\simhei.ttf", // 黑体
+    r"C:\Windows\Fonts\simsun.ttc", // 宋体
+];
+
+fn load_cjk_fonts(ctx: &egui::Context) {
+    let mut fonts = egui::FontDefinitions::default();
+    let mut loaded = String::new();
+    for cand in CJK_FONT_CANDIDATES {
+        if let Ok(bytes) = std::fs::read(cand) {
+            fonts.font_data.insert("cjk".into(), egui::FontData::from_owned(bytes).into());
+            loaded = (*cand).to_string();
+            break;
+        }
+    }
+    if loaded.is_empty() {
+        eprintln!("警告：未找到系统 CJK 字体，中文可能显示为方框");
+        return;
+    }
+    // 注入两个家族的索引 0：所有文字优先用 CJK 字体（含其自带 Latin），
+    // 默认字体排后作 emoji/补充字形 fallback。
+    for fam in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+        fonts.families.entry(fam).or_default().insert(0, "cjk".into());
+    }
+    ctx.set_fonts(fonts);
+    println!("CJK 字体：{loaded}");
+}
+
+fn logo_texture(ctx: &egui::Context) -> egui::TextureHandle {
+    let img = image::load_from_memory(LOGO_PNG).expect("logo png");
+    let rgba = img.to_rgba8();
+    let size = [rgba.width() as usize, rgba.height() as usize];
+    ctx.load_texture(
+        "logo",
+        egui::ColorImage::from_rgba_unmultiplied(size, rgba.as_raw()),
+        egui::TextureOptions::LINEAR,
+    )
 }
 
 /* ── App 状态 ──────────────────────────────────────────────── */
@@ -192,34 +243,25 @@ pub struct McApp {
     results: Vec<JobResult>,
     login_name: Option<String>,
     tab: Tab,
+    tex_logo: egui::TextureHandle,
     loader_sel: usize,
     mc_input: String,
     lv_input: String,
     ctype_sel: usize,
     query: String,
     results_mc: String,
-    search_hits: Option<(String, Vec<MSearchHit>)>,
+    search_hits: Option<Vec<MSearchHit>>,
     manifest: Option<Manifest>,
     mc_sel: Option<String>,
     mem_mb: u32,
     versions: Vec<String>,
+    show_log: bool,
 }
 
 impl McApp {
     fn new(cc: &eframe::CreationContext<'_>, handle: tokio::runtime::Handle, data: PathBuf) -> Self {
-        // 中文渲染：加载微软雅黑（Windows 自带；无则退默认字体）
-        let mut fonts = egui::FontDefinitions::default();
-        if let Ok(bytes) = std::fs::read(r"C:\Windows\Fonts\msyh.ttc") {
-            fonts.font_data.insert("msyh".into(), egui::FontData::from_owned(bytes).into());
-            for fam in ["Proportional", "Monospace"] {
-                fonts
-                    .families
-                    .entry(egui::FontFamily::Name(fam.into()))
-                    .or_default()
-                    .insert(0, "msyh".into());
-            }
-            cc.egui_ctx.set_fonts(fonts);
-        }
+        load_cjk_fonts(&cc.egui_ctx);
+        let tex_logo = logo_texture(&cc.egui_ctx);
 
         let (tx, rx) = mpsc::channel();
         let session = std::fs::read_to_string(data.join("token.json"))
@@ -235,11 +277,13 @@ impl McApp {
             .timeout(std::time::Duration::from_secs(600))
             .build()
             .expect("http client");
+
         Self {
             tasks: Tasks { tx, rx, handle, client, data },
             results: Vec::new(),
             login_name: session,
             tab: Tab::Home,
+            tex_logo,
             loader_sel: 0,
             mc_input: "1.21.4".into(),
             lv_input: String::new(),
@@ -251,6 +295,7 @@ impl McApp {
             mc_sel,
             mem_mb: 4096,
             versions,
+            show_log: true,
         }
     }
 
@@ -258,51 +303,65 @@ impl McApp {
         self.versions = list_installed(&self.tasks.data);
     }
 
+    fn push_log(&mut self, s: impl Into<String>) {
+        self.results.insert(0, (String::new(), Ok(s.into())));
+        if self.results.len() > 80 {
+            self.results.truncate(80);
+        }
+    }
+
+    /* ── 页面 ── */
+
     fn ui_home(&mut self, ui: &mut egui::Ui) {
         crate::theme::sci_label(ui, "启动 LAUNCH", crate::theme::CYAN);
-        crate::theme::hud_separator(ui);
-        if let Some(name) = &self.login_name.clone() {
-            ui.label(format!("正版会话：{name}"));
+        if let Some(name) = self.login_name.clone() {
+            ui.colored_label(egui::Color32::from_rgb(124, 232, 200), format!("正版会话：{name}"));
         } else {
             ui.colored_label(
                 egui::Color32::from_rgb(255, 200, 97),
-                "⚠ 未登录正版账号——先去「登录」页完成设备码认证",
+                "⚠ 未登录正版账号——请先到「登录」页完成设备码认证",
             );
         }
         ui.add_space(6.0);
-        ui.label("双击版本启动（正版会话，关闭游戏窗口后自动回收）：");
         if self.versions.is_empty() {
-            ui.weak("（还没有已安装版本——去「加载器」或「原版」页安装）");
+            ui.weak("还没有已安装版本——去「加载器」或「原版」页安装一个。");
+            return;
         }
-        egui::ScrollArea::vertical().max_height(260.0).show(ui, |ui| {
-            for v in self.versions.clone() {
-                let v_job = v.clone();
-                ui.horizontal(|ui| {
-                    if crate::theme::sci_button(ui, &format!("▶  {v}"), crate::theme::CYAN).clicked() {
-                        let mem = self.mem_mb;
-                        self.tasks.run(format!("游戏退出({v})"), move |client, data| {
-                            block_on(crate::launch::run(client, data, &v_job, mem, 0)).map(|_: ()| -> String { "正常退出".to_string() })
-                        });
-                        self.push_log(format!("启动 {v} …（关闭游戏窗口后自动回收）"));
-                    }
-                    if ui.button("🗑").on_hover_text("删除该版本").clicked() {
-                        let _ = std::fs::remove_dir_all(self.tasks.data.join("versions").join(&v));
-                        self.refresh_versions();
-                    }
-                });
-            }
-        });
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                for v in self.versions.clone() {
+                    let v_job = v.clone();
+                    ui.horizontal(|ui| {
+                        if crate::theme::sci_button(ui, &format!("▶  {v}"), crate::theme::CYAN).clicked()
+                        {
+                            let mem = self.mem_mb;
+                            self.tasks.run(format!("游戏退出({v})"), move |client, data| {
+                                block_on(crate::launch::run(client, data, &v_job, mem, 0))
+                                    .map(|_: ()| -> String { "正常退出".to_string() })
+                            });
+                            self.push_log(format!("启动 {v} …（关闭游戏窗口后自动回收）"));
+                        }
+                        if ui.small_button("🗑").on_hover_text("删除该版本").clicked() {
+                            let _ = std::fs::remove_dir_all(
+                                self.tasks.data.join("versions").join(&v),
+                            );
+                            self.refresh_versions();
+                        }
+                    });
+                }
+            });
     }
 
     fn ui_login(&mut self, ui: &mut egui::Ui) {
         crate::theme::sci_label(ui, "微软正版账号 AUTH", crate::theme::MINT);
-        crate::theme::hud_separator(ui);
-        if let Some(name) = &self.login_name {
+        if let Some(name) = self.login_name.clone() {
             ui.colored_label(egui::Color32::from_rgb(124, 232, 200), format!("已登录：{name}"));
             ui.label("token 存 data\\token.json，24h 内自动续期。");
         } else {
             ui.label("未登录。点下方按钮开始设备码流程（浏览器打开 microsoft.com/link 输码）。");
         }
+        ui.add_space(6.0);
         if crate::theme::sci_button(ui, "🔑 登录 / 刷新会话", crate::theme::MINT).clicked() {
             self.tasks.run("登录", |client, data| {
                 let s = block_on(crate::auth::login(client, data))?;
@@ -315,7 +374,6 @@ impl McApp {
 
     fn ui_loaders(&mut self, ui: &mut egui::Ui) {
         crate::theme::sci_label(ui, "模组加载器 LOADERS", crate::theme::CYAN);
-        crate::theme::hud_separator(ui);
         ui.horizontal(|ui| {
             ui.label("加载器：");
             for (i, name) in crate::loaders::SUPPORTED.iter().enumerate() {
@@ -336,19 +394,20 @@ impl McApp {
                 ui.end_row();
             });
         ui.weak("（加载器版本留空 = 自动取该 MC 的最新）");
+        ui.add_space(4.0);
         if crate::theme::sci_button(ui, "⚙ 安装", crate::theme::CYAN).clicked() {
             let loader = crate::loaders::SUPPORTED[self.loader_sel].to_string();
             let mc = self.mc_input.clone();
             let lv = self.lv_input.clone();
             self.tasks.run(format!("安装 {loader}"), move |client, data| {
-                block_on(crate::loaders::install(client, data, &loader, &mc, opt(&lv).as_deref())).map(|id| format!("版本 id {id}"))
+                block_on(crate::loaders::install(client, data, &loader, &mc, opt(&lv).as_deref()))
+                    .map(|id| format!("版本 id {id}"))
             });
         }
     }
 
     fn ui_content(&mut self, ui: &mut egui::Ui) {
         crate::theme::sci_label(ui, "内容库 CONTENT · Modrinth", crate::theme::VIOLET);
-        crate::theme::hud_separator(ui);
         ui.horizontal(|ui| {
             for (i, (name, ..)) in CONTENT_TYPES.iter().enumerate() {
                 if ui.selectable_label(self.ctype_sel == i, *name).clicked() {
@@ -359,7 +418,7 @@ impl McApp {
         ui.horizontal(|ui| {
             ui.label("搜索：");
             let resp = ui.text_edit_singleline(&mut self.query);
-            let (pt, _, _, _) = CONTENT_TYPES[self.ctype_sel];
+            let (pt, ..) = CONTENT_TYPES[self.ctype_sel];
             let mc = self.results_mc.clone();
             let search_clicked = crate::theme::sci_button(ui, "🔍 搜索", crate::theme::VIOLET).clicked()
                 || (resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
@@ -370,7 +429,15 @@ impl McApp {
                     let hits = block_on(modrinth_search(client, &pt, &q, &mc))?;
                     Ok(hits
                         .iter()
-                        .map(|h| format!("{}\t{}\t{}\t{}", h.slug, h.title, h.description.replace('\t', " "), h.downloads))
+                        .map(|h| {
+                            format!(
+                                "{}\t{}\t{}\t{}",
+                                h.slug,
+                                h.title,
+                                h.description.replace(['\t', '\n'], " "),
+                                h.downloads
+                            )
+                        })
                         .collect::<Vec<_>>()
                         .join("\n"))
                 });
@@ -381,32 +448,36 @@ impl McApp {
             ui.text_edit_singleline(&mut self.results_mc);
         });
         ui.add_space(6.0);
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            for h in &self.search_hits.iter().map(|(_, hits)| hits).flatten().cloned().collect::<Vec<_>>() {
-                ui.horizontal(|ui| {
-                    ui.vertical(|ui| {
-                        ui.strong(&h.title);
-                        ui.label(egui::RichText::new(&h.description).small());
-                        ui.label(egui::RichText::new(format!("⬇ {}", h.downloads)).small().weak());
-                    });
-                    if crate::theme::sci_button(ui, "📥 安装", crate::theme::MINT).clicked() {
-                        let (pt, _, _, _) = CONTENT_TYPES[self.ctype_sel];
-                        let pt = pt.to_string();
-                        let slug = h.slug.clone();
-                        let mc = self.results_mc.clone();
-                        self.tasks.run(format!("安装 {slug}"), move |client, data| {
-                            block_on(modrinth_download(client, &pt, &slug, &mc, data))
+        let hits = self.search_hits.clone().unwrap_or_default();
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                for h in &hits {
+                    ui.horizontal(|ui| {
+                        ui.vertical(|ui| {
+                            ui.strong(&h.title);
+                            ui.label(egui::RichText::new(&h.description).small());
+                            ui.label(
+                                egui::RichText::new(format!("⬇ {}", h.downloads)).small().weak(),
+                            );
                         });
-                    }
-                });
-                ui.separator();
-            }
-        });
+                        if crate::theme::sci_button(ui, "📥 安装", crate::theme::MINT).clicked() {
+                            let (pt, ..) = CONTENT_TYPES[self.ctype_sel];
+                            let pt = pt.to_string();
+                            let slug = h.slug.clone();
+                            let mc = self.results_mc.clone();
+                            self.tasks.run(format!("安装 {slug}"), move |client, data| {
+                                block_on(modrinth_download(client, &pt, &slug, &mc, data))
+                            });
+                        }
+                    });
+                    crate::theme::hud_separator(ui);
+                }
+            });
     }
 
     fn ui_vanilla(&mut self, ui: &mut egui::Ui) {
         crate::theme::sci_label(ui, "原版下载 VANILLA", crate::theme::CYAN);
-        crate::theme::hud_separator(ui);
         ui.horizontal(|ui| {
             ui.label("MC 版本：");
             egui::ComboBox::from_id_source("mcv")
@@ -426,11 +497,18 @@ impl McApp {
             }
         });
         ui.add_space(4.0);
-        if crate::theme::sci_button(ui, "⛏ 下载全套（client + libraries + assets + natives）", crate::theme::CYAN).clicked() {
+        if crate::theme::sci_button(
+            ui,
+            "⛏ 下载全套（client + libraries + assets + natives）",
+            crate::theme::CYAN,
+        )
+        .clicked()
+        {
             if let Some(mc) = self.mc_sel.clone() {
                 let mc_job = mc.clone();
                 self.tasks.run(format!("下载 {mc}"), move |client, data| {
-                    block_on(crate::fetch::fetch_version(client, data, Some(&mc_job), false)).map(|_: ()| -> String { "全套就绪".to_string() })
+                    block_on(crate::fetch::fetch_version(client, data, Some(&mc_job), false))
+                        .map(|_: ()| -> String { "全套就绪".to_string() })
                 });
             }
         }
@@ -439,7 +517,6 @@ impl McApp {
 
     fn ui_settings(&mut self, ui: &mut egui::Ui) {
         crate::theme::sci_label(ui, "设置 SETTINGS", crate::theme::AMBER);
-        crate::theme::hud_separator(ui);
         ui.horizontal(|ui| {
             ui.label("游戏内存 MB：");
             ui.add(egui::DragValue::new(&mut self.mem_mb).speed(100).range(1024..=16384));
@@ -447,19 +524,17 @@ impl McApp {
         ui.label(format!("数据目录：{}", self.tasks.data.display()));
         ui.label("JVM：自动下载 Adoptium Temurin JRE 到 data\\jre\\（加载器安装与模组版启动需要）");
         ui.add_space(8.0);
-        if ui.button("🧹 清理 data\\downloads（安装器缓存）").clicked() {
+        if crate::theme::sci_button(ui, "🧹 清理安装器缓存 downloads", crate::theme::AMBER).clicked()
+        {
             let _ = std::fs::remove_dir_all(self.tasks.data.join("downloads"));
             self.push_log("downloads 已清理");
         }
         ui.add_space(10.0);
-        ui.weak("mc-native-exp · 实验项目，可能不稳定 · 正式使用请选 Aurora Launcher");
-    }
-
-    fn push_log(&mut self, s: impl Into<String>) {
-        self.results.insert(0, (String::new(), Ok(s.into())));
-        if self.results.len() > 60 {
-            self.results.truncate(60);
-        }
+        ui.weak(format!(
+            "{} v{} · 实验项目，可能不稳定 · 正式使用请选 Aurora Launcher",
+            APP_NAME,
+            env!("CARGO_PKG_VERSION")
+        ));
     }
 }
 
@@ -469,7 +544,9 @@ fn list_installed(data: &Path) -> Vec<String> {
     if let Ok(rd) = std::fs::read_dir(&dir) {
         for e in rd.flatten() {
             let p = e.path();
-            if p.is_dir() && p.join(format!("{}.json", e.file_name().to_string_lossy())).exists() {
+            if p.is_dir()
+                && p.join(format!("{}.json", e.file_name().to_string_lossy())).exists()
+            {
                 out.push(e.file_name().to_string_lossy().to_string());
             }
         }
@@ -483,10 +560,33 @@ fn opt(s: &str) -> Option<String> {
     (!s.trim().is_empty()).then(|| s.trim().to_string())
 }
 
+/* ── 布局 ──────────────────────────────────────────────────── */
+
+const NAV: &[(Tab, &str, &str)] = &[
+    (Tab::Home, "🚀", "主页"),
+    (Tab::Login, "🔑", "登录"),
+    (Tab::Loaders, "🧩", "加载器"),
+    (Tab::Content, "📦", "内容库"),
+    (Tab::Vanilla, "⛏", "原版"),
+    (Tab::Settings, "⚙", "设置"),
+];
+
+fn page_title(tab: Tab) -> &'static str {
+    match tab {
+        Tab::Home => "启动",
+        Tab::Login => "正版账号",
+        Tab::Loaders => "模组加载器",
+        Tab::Content => "内容库 · Modrinth",
+        Tab::Vanilla => "原版下载",
+        Tab::Settings => "设置",
+    }
+}
+
 impl eframe::App for McApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         crate::theme::install(ctx);
-        // 回收后台任务结果
+
+        // 回收后台任务
         for (desc, res) in self.tasks.poll() {
             if let Ok(msg) = &res {
                 if desc.starts_with("登录") {
@@ -505,13 +605,16 @@ impl eframe::App for McApp {
                             })
                         })
                         .collect();
-                    self.search_hits = Some((desc.clone(), hits));
+                    self.search_hits = Some(hits);
                 }
                 if desc.starts_with("刷新清单") {
                     self.manifest = manifest::load(&self.tasks.data).ok();
                     self.mc_sel = self.manifest.as_ref().map(|m| m.latest.release.clone());
                 }
-                if desc.starts_with("安装 ") || desc.starts_with("下载 ") || desc.starts_with("游戏退出") {
+                if desc.starts_with("安装 ")
+                    || desc.starts_with("下载 ")
+                    || desc.starts_with("游戏退出")
+                {
                     self.refresh_versions();
                 }
             }
@@ -521,53 +624,158 @@ impl eframe::App for McApp {
             }
         }
 
-        // 顶栏标签
-        egui::TopBottomPanel::top("tabs").show(ctx, |ui| {
-            ui.horizontal(|ui| {
+        // ── 左侧导航栏 ──
+        egui::SidePanel::left("sidebar")
+            .exact_width(200.0)
+            .resizable(false)
+            .frame(
+                egui::Frame::none()
+                    .fill(crate::theme::PANEL)
+                    .inner_margin(egui::Margin::same(12.0)),
+            )
+            .show(ctx, |ui| {
+                ui.vertical_centered(|ui| {
+                    ui.add_space(8.0);
+                    ui.add(egui::Image::new(&self.tex_logo).max_size(egui::vec2(96.0, 96.0)));
+                    ui.add_space(4.0);
+                    ui.label(
+                        egui::RichText::new(APP_NAME)
+                            .strong()
+                            .heading()
+                            .color(crate::theme::TEXT),
+                    );
+                    ui.label(egui::RichText::new(APP_SUB).small().color(crate::theme::AMBER));
+                });
+                ui.add_space(10.0);
+                crate::theme::hud_separator(ui);
                 ui.add_space(8.0);
-                for (t, label) in [
-                    (Tab::Home, "🚀 主页"),
-                    (Tab::Login, "🔑 登录"),
-                    (Tab::Loaders, "🧩 加载器"),
-                    (Tab::Content, "📦 内容库"),
-                    (Tab::Vanilla, "⛏ 原版"),
-                    (Tab::Settings, "⚙ 设置"),
-                ] {
-                    let sel = self.tab == t;
-                    let text = egui::RichText::new(label).heading().color(if sel {
-                        egui::Color32::from_rgb(95, 232, 255)
+
+                for (t, icon, label) in NAV {
+                    let sel = self.tab == *t;
+                    let text = egui::RichText::new(format!("{icon}  {label}")).color(if sel {
+                        crate::theme::CYAN
                     } else {
-                        egui::Color32::GRAY
+                        egui::Color32::from_rgb(190, 198, 214)
                     });
-                    if ui.add(egui::SelectableLabel::new(sel, text)).clicked() {
-                        self.tab = t;
+                    let resp =
+                        ui.add_sized([ui.available_width(), 36.0], egui::SelectableLabel::new(sel, text));
+                    if sel {
+                        let rect = resp.rect;
+                        ui.painter().rect_filled(
+                            egui::Rect::from_min_size(
+                                egui::pos2(rect.left() - 8.0, rect.top()),
+                                egui::vec2(3.0, rect.height()),
+                            ),
+                            2.0,
+                            crate::theme::CYAN,
+                        );
                     }
-                    ui.separator();
+                    if resp.clicked() {
+                        self.tab = *t;
+                    }
                 }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    match &self.login_name {
-                        Some(name) => ui.colored_label(egui::Color32::from_rgb(124, 232, 200), format!("正版：{name}")),
-                        None => ui.weak("未登录"),
-                    };
+
+                ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
+                    ui.add_space(8.0);
+                    ui.label(
+                        egui::RichText::new(format!("v{}", env!("CARGO_PKG_VERSION")))
+                            .small()
+                            .color(crate::theme::MUTED),
+                    );
+                    ui.label(
+                        egui::RichText::new("⚠ 实验项目 · 可能不稳定")
+                            .small()
+                            .color(crate::theme::AMBER),
+                    );
                 });
             });
-        });
 
-        // 底部运行状态
-        egui::TopBottomPanel::bottom("log").show(ctx, |ui| {
-            ui.add_space(4.0);
-            ui.label(egui::RichText::new("运行状态").strong());
-            egui::ScrollArea::vertical().max_height(140.0).stick_to_bottom(false).show(ui, |ui| {
-                for (desc, res) in &self.results {
-                    match res {
-                        Ok(msg) if desc.is_empty() => ui.label(egui::RichText::new(msg).small().monospace()),
-                        Ok(msg) => ui.label(egui::RichText::new(format!("✅ {desc}：{msg}")).small().monospace()),
-                        Err(e) => ui.label(egui::RichText::new(format!("❌ {desc}：{e}")).small().monospace().color(egui::Color32::from_rgb(255, 140, 140))),
-                    };
+        // ── 顶部标题栏 ──
+        egui::TopBottomPanel::top("header")
+            .frame(
+                egui::Frame::none()
+                    .fill(crate::theme::PANEL)
+                    .inner_margin(egui::Margin::symmetric(16.0, 10.0)),
+            )
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new(page_title(self.tab))
+                            .heading()
+                            .color(crate::theme::TEXT),
+                    );
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        match &self.login_name {
+                            Some(name) => ui.colored_label(
+                                egui::Color32::from_rgb(124, 232, 200),
+                                format!("👤 {name}"),
+                            ),
+                            None => ui.colored_label(crate::theme::AMBER, "👤 未登录"),
+                        };
+                    });
+                });
+            });
+
+        // ── 底部状态栏 ──
+        egui::TopBottomPanel::bottom("log")
+            .frame(
+                egui::Frame::none()
+                    .fill(crate::theme::PANEL)
+                    .inner_margin(egui::Margin::symmetric(12.0, 6.0)),
+            )
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    let arrow = if self.show_log { "▾" } else { "▸" };
+                    if ui
+                        .add(
+                            egui::Label::new(
+                                egui::RichText::new(format!("{arrow} 运行状态"))
+                                    .small()
+                                    .strong()
+                                    .color(crate::theme::CYAN),
+                            )
+                            .sense(egui::Sense::click()),
+                        )
+                        .clicked()
+                    {
+                        self.show_log = !self.show_log;
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(
+                            egui::RichText::new(format!("已装版本 {}", self.versions.len()))
+                                .small()
+                                .color(crate::theme::MUTED),
+                        );
+                    });
+                });
+                if self.show_log {
+                    egui::ScrollArea::vertical()
+                        .max_height(120.0)
+                        .stick_to_bottom(false)
+                        .show(ui, |ui| {
+                            for (desc, res) in &self.results {
+                                match res {
+                                    Ok(msg) if desc.is_empty() => ui
+                                        .label(egui::RichText::new(msg).small().monospace()),
+                                    Ok(msg) => ui.label(
+                                        egui::RichText::new(format!("✅ {desc}：{msg}"))
+                                            .small()
+                                            .monospace()
+                                            .color(egui::Color32::from_rgb(124, 232, 200)),
+                                    ),
+                                    Err(e) => ui.label(
+                                        egui::RichText::new(format!("❌ {desc}：{e}"))
+                                            .small()
+                                            .monospace()
+                                            .color(egui::Color32::from_rgb(240, 140, 140)),
+                                    ),
+                                };
+                            }
+                        });
                 }
             });
-        });
 
+        // ── 主内容区 ──
         egui::CentralPanel::default().show(ctx, |ui| match self.tab {
             Tab::Home => self.ui_home(ui),
             Tab::Login => self.ui_login(ui),
@@ -579,18 +787,19 @@ impl eframe::App for McApp {
     }
 }
 
-/* ── 入口 ─────────────────────────────────────────────────── */
+/* ── 入口 ──────────────────────────────────────────────────── */
 
 pub fn run_gui(handle: tokio::runtime::Handle, data: PathBuf) -> Result<(), String> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("mc-native-exp · 实验启动器（可能不稳定）")
-            .with_inner_size([1100.0, 720.0])
+            .with_title(format!("{APP_NAME} · {APP_SUB}"))
+            .with_inner_size([1080.0, 700.0])
+            .with_min_inner_size([920.0, 600.0])
             .with_icon(egui_icon()),
         ..Default::default()
     };
     eframe::run_native(
-        "mc-native-exp",
+        APP_NAME,
         options,
         Box::new(move |cc| Ok(Box::new(McApp::new(cc, handle, data)) as Box<dyn eframe::App>)),
     )
