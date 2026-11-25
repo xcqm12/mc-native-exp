@@ -19,6 +19,7 @@ mod manifest;
 mod profile;
 mod report;
 mod scan;
+mod settings;
 
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
@@ -68,9 +69,20 @@ enum Cmd {
     },
     /// 汇总全部数据生成 REPORT.md
     Report,
+    /// 查看 / 修改设置（数据目录、版本隔离、默认游戏目录）
+    Config {
+        /// 设置数据目录（绝对路径）；传空字符串清空回默认
+        #[arg(long)]
+        data_dir: Option<String>,
+        /// 开启/关闭多版本隔离（每版本独立游戏目录）
+        #[arg(long)]
+        isolation: Option<bool>,
+        /// 设置默认游戏目录（隔离关闭时生效）
+        #[arg(long)]
+        game_dir: Option<String>,
+    },
     /// 控制台交互菜单（默认双击进 GUI）
     Menu,
-    /// 控制台交互菜单（默认双击进 GUI）
     /// 列出实验支持的模组加载器
     Loaders,
     /// 自动安装模组加载器（fabric/quilt/neoforge/forge）到项目 data 目录
@@ -113,19 +125,9 @@ fn main() {
 }
 
 async fn run(cli: Cli, handle: tokio::runtime::Handle) -> Result<(), String> {
-    // 数据目录：显式绝对路径尊重之；显式相对路径基于 CWD；
-    // 未传 --data（双击启动）固定 exe 目录旁 data\，不受启动位置影响
-    let data = match &cli.data {
-        Some(p) if p.is_absolute() => p.clone(),
-        Some(p) => std::env::current_dir()
-            .unwrap_or_else(|_| PathBuf::from("."))
-            .join(p),
-        None => std::env::current_exe()
-            .ok()
-            .and_then(|p| p.parent().map(|d| d.to_path_buf()))
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("data"),
-    };
+    // 数据目录：--data 优先，其次引导配置（exe 同目录 mc-native-exp.config.json），
+    // 最后默认 exe 旁 data
+    let data = settings::resolve_data_dir(cli.data.as_deref());
     std::fs::create_dir_all(&data).map_err(|e| format!("创建数据目录失败：{e}"))?;
 
     let client = reqwest::Client::builder()
@@ -282,6 +284,24 @@ async fn run_cmd(
         Cmd::Scan { version, all } => scan::run(data, version.as_deref(), all),
         Cmd::Interp { version } => interp::run(data, version.as_deref()),
         Cmd::Report => report::run(data),
+        Cmd::Config { data_dir, isolation, game_dir } => {
+            let mut cfg = settings::load();
+            if let Some(d) = data_dir {
+                cfg.data_dir = (!d.trim().is_empty()).then(|| PathBuf::from(d.trim()));
+            }
+            if let Some(v) = isolation {
+                cfg.isolation = v;
+            }
+            if let Some(d) = game_dir {
+                cfg.game_dir = (!d.trim().is_empty()).then(|| PathBuf::from(d.trim()));
+            }
+            settings::save(&cfg)?;
+            println!("配置文件：{}", settings::config_path().display());
+            println!("{}", serde_json::to_string_pretty(&cfg).map_err(|e| e.to_string())?);
+            println!("数据目录（解析后）：{}", settings::resolve_data_dir(None).display());
+            println!("（数据目录变更重启后生效）");
+            Ok(())
+        }
         Cmd::Menu => interactive_menu(client, data).await,
         Cmd::Loaders => {
             println!("实验支持的加载器：{}", loaders::SUPPORTED.join(" / "));

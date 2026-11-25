@@ -136,8 +136,10 @@ pub async fn run(
         .unwrap_or("legacy")
         .to_string();
 
-    let game_dir = data.join("game");
+    // 游戏目录：版本级覆盖 → 隔离模式 → 默认目录 → data\game
+    let game_dir = crate::settings::resolve_game_dir(data, id);
     std::fs::create_dir_all(&game_dir).map_err(|e| format!("{e}"))?;
+    println!("游戏目录：{}", game_dir.display());
     let assets_root = data.join("assets");
 
     let mut ph = |k: &str, val: &str| (format!("${{{k}}}"), val.to_string());

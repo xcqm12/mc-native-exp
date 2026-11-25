@@ -256,6 +256,9 @@ pub struct McApp {
     mem_mb: u32,
     versions: Vec<String>,
     show_log: bool,
+    cfg: crate::settings::Config,
+    /// 待重启生效提示（数据目录变更）
+    restart_hint: bool,
 }
 
 impl McApp {
@@ -296,6 +299,8 @@ impl McApp {
             mem_mb: 4096,
             versions,
             show_log: true,
+            cfg: crate::settings::load(),
+            restart_hint: false,
         }
     }
 
@@ -342,12 +347,33 @@ impl McApp {
                             });
                             self.push_log(format!("启动 {v} …（关闭游戏窗口后自动回收）"));
                         }
+                        if ui.small_button("📁 目录").on_hover_text("自定义该版本游戏目录").clicked() {
+                            let cur = crate::settings::resolve_game_dir(&self.tasks.data, &v);
+                            if let Some(dir) = pick_folder("选择该版本的游戏目录", Some(&cur)) {
+                                let mut inst = crate::settings::load_instance(&self.tasks.data, &v);
+                                inst.game_dir = Some(dir.clone());
+                                match crate::settings::save_instance(&self.tasks.data, &v, &inst) {
+                                    Ok(()) => self.push_log(format!("{v} 游戏目录 → {}", dir.display())),
+                                    Err(e) => self.push_log(format!("保存失败：{e}")),
+                                }
+                            }
+                        }
+                        if crate::settings::load_instance(&self.tasks.data, &v).game_dir.is_some()
+                            && ui.small_button("↺").on_hover_text("恢复跟随全局策略").clicked()
+                        {
+                            let mut inst = crate::settings::load_instance(&self.tasks.data, &v);
+                            inst.game_dir = None;
+                            let _ = crate::settings::save_instance(&self.tasks.data, &v, &inst);
+                            self.push_log(format!("{v} 游戏目录已恢复跟随全局"));
+                        }
                         if ui.small_button("🗑").on_hover_text("删除该版本").clicked() {
                             let _ = std::fs::remove_dir_all(
                                 self.tasks.data.join("versions").join(&v),
                             );
                             self.refresh_versions();
                         }
+                        let gd = crate::settings::resolve_game_dir(&self.tasks.data, &v);
+                        ui.label(egui::RichText::new(gd.display().to_string()).small().color(crate::theme::MUTED));
                     });
                 }
             });
@@ -521,13 +547,97 @@ impl McApp {
             ui.label("游戏内存 MB：");
             ui.add(egui::DragValue::new(&mut self.mem_mb).speed(100).range(1024..=16384));
         });
-        ui.label(format!("数据目录：{}", self.tasks.data.display()));
-        ui.label("JVM：自动下载 Adoptium Temurin JRE 到 data\\jre\\（加载器安装与模组版启动需要）");
-        ui.add_space(8.0);
+        ui.add_space(6.0);
+        crate::theme::hud_separator(ui);
+
+        // ── 数据目录（可迁移） ──
+        ui.label(egui::RichText::new("数据目录").strong().color(crate::theme::CYAN));
+        ui.label(format!("当前生效：{}", self.tasks.data.display()));
+        if let Some(p) = &self.cfg.data_dir {
+            ui.label(egui::RichText::new(format!("配置指定：{}", p.display())).small());
+        }
+        ui.horizontal(|ui| {
+            if crate::theme::sci_button(ui, "📁 选择数据目录", crate::theme::CYAN).clicked() {
+                if let Some(dir) = pick_folder("选择数据目录（versions/libraries/assets 存放处）", Some(&self.tasks.data)) {
+                    self.cfg.data_dir = Some(dir);
+                    match crate::settings::save(&self.cfg) {
+                        Ok(()) => {
+                            self.restart_hint = true;
+                            self.push_log("数据目录已保存——重启启动器后生效");
+                        }
+                        Err(e) => self.push_log(format!("保存失败：{e}")),
+                    }
+                }
+            }
+            if ui.small_button("恢复默认").clicked() {
+                self.cfg.data_dir = None;
+                let _ = crate::settings::save(&self.cfg);
+                self.restart_hint = true;
+                self.push_log("数据目录已恢复默认（exe 旁 data），重启生效");
+            }
+        });
+        ui.weak("数据目录可放到任意磁盘；迁移时整目录复制后在此指向新位置。");
+        ui.add_space(6.0);
+        crate::theme::hud_separator(ui);
+
+        // ── 多版本隔离 ──
+        ui.label(egui::RichText::new("多版本隔离").strong().color(crate::theme::MINT));
+        let mut iso = self.cfg.isolation;
+        if ui
+            .checkbox(&mut iso, "每个版本使用独立游戏目录（存档 / 模组 / 资源包互不影响）")
+            .changed()
+        {
+            self.cfg.isolation = iso;
+            match crate::settings::save(&self.cfg) {
+                Ok(()) => self.push_log(if iso {
+                    "已开启多版本隔离：游戏目录 = instances\\<版本>\\game"
+                } else {
+                    "已关闭多版本隔离：使用共享游戏目录"
+                }),
+                Err(e) => self.push_log(format!("保存失败：{e}")),
+            }
+        }
+        ui.weak("开启后每个版本存档/模组/资源包完全隔离；关闭则共用下面「默认游戏目录」。");
+        ui.add_space(6.0);
+        crate::theme::hud_separator(ui);
+
+        // ── 默认游戏目录（隔离关闭时生效） ──
+        ui.label(egui::RichText::new("默认游戏目录").strong().color(crate::theme::VIOLET));
+        let default_gd = self
+            .cfg
+            .game_dir
+            .clone()
+            .unwrap_or_else(|| self.tasks.data.join("game"));
+        ui.label(format!("当前生效：{}", default_gd.display()));
+        ui.horizontal(|ui| {
+            if crate::theme::sci_button(ui, "📁 选择游戏目录", crate::theme::VIOLET).clicked() {
+                if let Some(dir) = pick_folder("选择默认游戏目录（.minecraft 形态：saves/mods/resourcepacks）", Some(&default_gd)) {
+                    self.cfg.game_dir = Some(dir);
+                    match crate::settings::save(&self.cfg) {
+                        Ok(()) => self.push_log("默认游戏目录已保存（隔离关闭时生效）"),
+                        Err(e) => self.push_log(format!("保存失败：{e}")),
+                    }
+                }
+            }
+            if ui.small_button("恢复默认").clicked() {
+                self.cfg.game_dir = None;
+                let _ = crate::settings::save(&self.cfg);
+                self.push_log("默认游戏目录已恢复为 data/game");
+            }
+        });
+        ui.weak("指向已有 .minecraft 目录即可直接复用其存档与模组。");
+        ui.add_space(6.0);
+        crate::theme::hud_separator(ui);
+
+        ui.label("JVM：自动下载 Adoptium Temurin JRE 到 data/jre（加载器安装与模组版启动需要）");
         if crate::theme::sci_button(ui, "🧹 清理安装器缓存 downloads", crate::theme::AMBER).clicked()
         {
             let _ = std::fs::remove_dir_all(self.tasks.data.join("downloads"));
             self.push_log("downloads 已清理");
+        }
+        if self.restart_hint {
+            ui.add_space(6.0);
+            ui.colored_label(crate::theme::AMBER, "⚠ 数据目录变更需重启启动器后生效");
         }
         ui.add_space(10.0);
         ui.weak(format!(
@@ -536,6 +646,31 @@ impl McApp {
             env!("CARGO_PKG_VERSION")
         ));
     }
+}
+
+/// Windows 原生文件夹选择器（PowerShell FolderBrowserDialog，零依赖）。
+/// 取消返回 None。
+pub fn pick_folder(title: &str, initial: Option<&Path>) -> Option<PathBuf> {
+    let mut ps = String::from(
+        "Add-Type -AssemblyName System.Windows.Forms;          $d = New-Object System.Windows.Forms.FolderBrowserDialog; ",
+    );
+    ps.push_str(&format!(
+        "$d.Description = '{}'; ",
+        title.replace('\'', "")
+    ));
+    if let Some(p) = initial {
+        ps.push_str(&format!(
+            "$d.SelectedPath = '{}'; ",
+            p.display().to_string().replace('\'', "")
+        ));
+    }
+    ps.push_str("if ($d.ShowDialog() -eq 'OK') { Write-Output $d.SelectedPath }");
+    let out = std::process::Command::new("powershell")
+        .args(["-NoProfile", "-STA", "-Command", &ps])
+        .output()
+        .ok()?;
+    let picked = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (!picked.is_empty()).then(|| PathBuf::from(picked))
 }
 
 fn list_installed(data: &Path) -> Vec<String> {
