@@ -259,6 +259,10 @@ pub struct McApp {
     cfg: crate::settings::Config,
     /// 待重启生效提示（数据目录变更）
     restart_hint: bool,
+    /// 小七 AI 设置输入缓冲（保存后写回配置）
+    ai_base: String,
+    ai_key: String,
+    ai_model: String,
 }
 
 impl McApp {
@@ -281,6 +285,10 @@ impl McApp {
             .build()
             .expect("http client");
 
+        let cfg = crate::settings::load();
+        let ai_base = cfg.ai_base_url.clone().unwrap_or_default();
+        let ai_key = cfg.ai_key.clone().unwrap_or_default();
+        let ai_model = cfg.ai_model.clone().unwrap_or_default();
         Self {
             tasks: Tasks { tx, rx, handle, client, data },
             results: Vec::new(),
@@ -299,8 +307,11 @@ impl McApp {
             mem_mb: 4096,
             versions,
             show_log: true,
-            cfg: crate::settings::load(),
+            cfg,
             restart_hint: false,
+            ai_base,
+            ai_key,
+            ai_model,
         }
     }
 
@@ -626,6 +637,57 @@ impl McApp {
             }
         });
         ui.weak("指向已有 .minecraft 目录即可直接复用其存档与模组。");
+        ui.add_space(6.0);
+        crate::theme::hud_separator(ui);
+
+        // ── 小七伙伴（客户端 AI 实体） ──
+        ui.label(egui::RichText::new("小七伙伴（AI 玩家）").strong().color(crate::theme::AMBER));
+        let mut ai_on = self.cfg.ai_enabled;
+        if ui
+            .checkbox(&mut ai_on, "Fabric/Quilt 1.21.4 实例自动生成小七（换皮 + 跟随 + 聊天指令）")
+            .changed()
+        {
+            self.cfg.ai_enabled = ai_on;
+            match crate::settings::save(&self.cfg) {
+                Ok(()) => self.push_log(if ai_on { "小七伙伴已开启" } else { "小七伙伴已关闭" }),
+                Err(e) => self.push_log(format!("保存失败：{e}")),
+            }
+        }
+        ui.horizontal(|ui| {
+            ui.label("接口地址：");
+            ui.add(
+                egui::TextEdit::singleline(&mut self.ai_base)
+                    .hint_text("https://api.deepseek.com/v1")
+                    .desired_width(320.0),
+            );
+        });
+        ui.horizontal(|ui| {
+            ui.label("API Key：");
+            ui.add(
+                egui::TextEdit::singleline(&mut self.ai_key)
+                    .password(true)
+                    .hint_text("sk-…（只写入本地配置，不进日志）")
+                    .desired_width(320.0),
+            );
+        });
+        ui.horizontal(|ui| {
+            ui.label("模型名：");
+            ui.add(
+                egui::TextEdit::singleline(&mut self.ai_model)
+                    .hint_text("deepseek-chat")
+                    .desired_width(180.0),
+            );
+            if crate::theme::sci_button(ui, "💾 保存 AI 设置", crate::theme::MINT).clicked() {
+                self.cfg.ai_base_url = (!self.ai_base.trim().is_empty()).then(|| self.ai_base.trim().to_string());
+                self.cfg.ai_key = (!self.ai_key.trim().is_empty()).then(|| self.ai_key.trim().to_string());
+                self.cfg.ai_model = (!self.ai_model.trim().is_empty()).then(|| self.ai_model.trim().to_string());
+                match crate::settings::save(&self.cfg) {
+                    Ok(()) => self.push_log("AI 设置已保存（下次启动游戏生效）"),
+                    Err(e) => self.push_log(format!("保存失败：{e}")),
+                }
+            }
+        });
+        ui.weak("不填 Key 也能用：聊天框输入 #ai 跟随 / #ai 停下 / #ai 过来 / #ai 看我 走本地规则；填了 Key，闲聊与问答才交给 LLM。");
         ui.add_space(6.0);
         crate::theme::hud_separator(ui);
 

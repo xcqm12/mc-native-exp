@@ -23,6 +23,16 @@ pub async fn run(
 
     let v = profile::merged_version(data, id, 0)?;
     let dir = crate::fetch::versions_dir(data).join(id);
+    // 原版基础版本（loader profile 的 inheritsFrom；原版版本就是自身 id）
+    let base_mc = std::fs::read_to_string(dir.join(format!("{id}.json")))
+        .ok()
+        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+        .and_then(|x| {
+            x.get("inheritsFrom")
+                .and_then(|y| y.as_str())
+                .map(|s| s.to_string())
+        })
+        .unwrap_or_else(|| id.to_string());
 
     // 文件确保（已存在的哈希匹配即跳过）
     profile::fetch_profile(client, data, id).await?;
@@ -142,7 +152,32 @@ pub async fn run(
     println!("游戏目录：{}", game_dir.display());
     let assets_root = data.join("assets");
 
-    let mut ph = |k: &str, val: &str| (format!("${{{k}}}"), val.to_string());
+    // 小七伙伴：Fabric/Quilt 1.21.4 实例自动装模组 + 本机 AI 桥（端口随机/token 随机）
+    let cfg = crate::settings::load();
+    let mut _ai_bridge: Option<crate::ai_bridge::Bridge> = None;
+    let mut companion_args: Vec<String> = Vec::new();
+    if cfg.ai_enabled && crate::companion::supports(id, &base_mc) {
+        match crate::companion::ensure_installed(&game_dir) {
+            Ok(p) => println!("小七伙伴：{}", p.display()),
+            Err(e) => println!("  ⚠ 小七伙伴安装失败：{e}"),
+        }
+        let handle = crate::ai_bridge::AppHandleLite {
+            client: client.clone(),
+            data: data.to_path_buf(),
+        };
+        match crate::ai_bridge::start(handle) {
+            Ok(b) => {
+                println!("AI 桥：127.0.0.1:{}（token 只注入本机游戏进程）", b.port);
+                companion_args.push(format!("-Dmcne.ai.port={}", b.port));
+                companion_args.push(format!("-Dmcne.ai.token={}", b.token));
+                companion_args.push(format!("-Dmcne.ai.player={}", session.player_name));
+                _ai_bridge = Some(b);
+            }
+            Err(e) => println!("  ⚠ {e}"),
+        }
+    }
+
+    let ph = |k: &str, val: &str| (format!("${{{k}}}"), val.to_string());
     let placeholders: Vec<(String, String)> = vec![
         ph("auth_player_name", &session.player_name),
         ph("auth_uuid", &session.player_uuid),
@@ -194,6 +229,8 @@ pub async fn run(
             }
         }
     }
+    // 小七伙伴桥参数（放在版本自带参数之后，确保不被覆盖）
+    jvm.extend(companion_args);
 
     // 游戏参数
     let mut game: Vec<String> = Vec::new();

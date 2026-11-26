@@ -7,7 +7,9 @@
 #![allow(dead_code)]
 
 mod auth;
+mod ai_bridge;
 mod classparse;
+mod companion;
 mod gui;
 mod theme;
 mod fetch;
@@ -80,6 +82,18 @@ enum Cmd {
         /// 设置默认游戏目录（隔离关闭时生效）
         #[arg(long)]
         game_dir: Option<String>,
+        /// 开启/关闭小七伙伴（客户端 AI 实体）
+        #[arg(long)]
+        ai: Option<bool>,
+        /// OpenAI 兼容接口地址（如 https://api.deepseek.com/v1）
+        #[arg(long)]
+        ai_base_url: Option<String>,
+        /// 接口 Key（只写本地配置，不进日志）
+        #[arg(long)]
+        ai_key: Option<String>,
+        /// 模型名（如 deepseek-chat）
+        #[arg(long)]
+        ai_model: Option<String>,
     },
     /// 控制台交互菜单（默认双击进 GUI）
     Menu,
@@ -284,7 +298,7 @@ async fn run_cmd(
         Cmd::Scan { version, all } => scan::run(data, version.as_deref(), all),
         Cmd::Interp { version } => interp::run(data, version.as_deref()),
         Cmd::Report => report::run(data),
-        Cmd::Config { data_dir, isolation, game_dir } => {
+        Cmd::Config { data_dir, isolation, game_dir, ai, ai_base_url, ai_key, ai_model } => {
             let mut cfg = settings::load();
             if let Some(d) = data_dir {
                 cfg.data_dir = (!d.trim().is_empty()).then(|| PathBuf::from(d.trim()));
@@ -295,9 +309,26 @@ async fn run_cmd(
             if let Some(d) = game_dir {
                 cfg.game_dir = (!d.trim().is_empty()).then(|| PathBuf::from(d.trim()));
             }
+            if let Some(v) = ai {
+                cfg.ai_enabled = v;
+            }
+            if let Some(v) = ai_base_url {
+                cfg.ai_base_url = (!v.trim().is_empty()).then(|| v.trim().to_string());
+            }
+            if let Some(v) = ai_key {
+                cfg.ai_key = (!v.trim().is_empty()).then(|| v.trim().to_string());
+            }
+            if let Some(v) = ai_model {
+                cfg.ai_model = (!v.trim().is_empty()).then(|| v.trim().to_string());
+            }
             settings::save(&cfg)?;
+            // 输出时遮蔽 Key（配置里明文保存，终端里不回显）
+            let mut shown = cfg.clone();
+            if shown.ai_key.as_ref().is_some_and(|k| !k.trim().is_empty()) {
+                shown.ai_key = Some("***".into());
+            }
             println!("配置文件：{}", settings::config_path().display());
-            println!("{}", serde_json::to_string_pretty(&cfg).map_err(|e| e.to_string())?);
+            println!("{}", serde_json::to_string_pretty(&shown).map_err(|e| e.to_string())?);
             println!("数据目录（解析后）：{}", settings::resolve_data_dir(None).display());
             println!("（数据目录变更重启后生效）");
             Ok(())

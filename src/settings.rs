@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 
 pub const CONFIG_NAME: &str = "mc-native-exp.config.json";
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     /// 数据目录（绝对路径）；空/缺失 = exe 同目录 data\
     #[serde(default)]
@@ -24,6 +24,36 @@ pub struct Config {
     /// 默认游戏目录（隔离关闭时生效）；空 = `<data>\game`
     #[serde(default)]
     pub game_dir: Option<PathBuf>,
+    /// 小七伙伴（客户端 AI 实体）开关；默认开启
+    #[serde(default = "default_true")]
+    pub ai_enabled: bool,
+    /// OpenAI 兼容接口地址，如 `https://api.deepseek.com/v1`；空 = 只用规则
+    #[serde(default)]
+    pub ai_base_url: Option<String>,
+    /// 接口 Key；只存本地配置文件，不写日志
+    #[serde(default)]
+    pub ai_key: Option<String>,
+    /// 模型名，如 `deepseek-chat`；空 = 用服务端默认
+    #[serde(default)]
+    pub ai_model: Option<String>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            data_dir: None,
+            isolation: false,
+            game_dir: None,
+            ai_enabled: true,
+            ai_base_url: None,
+            ai_key: None,
+            ai_model: None,
+        }
+    }
 }
 
 /// 引导配置路径：exe 同目录（便携语义，移动整个文件夹即整体迁移）。

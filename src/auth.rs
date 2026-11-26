@@ -50,6 +50,24 @@ fn token_path(data: &Path) -> PathBuf {
     data.join("token.json")
 }
 
+/// 复制文本到系统剪贴板（Windows clip.exe，零依赖）；失败不影响登录流程。
+fn copy_clipboard(text: &str) -> bool {
+    use std::io::Write;
+    let Ok(mut child) = std::process::Command::new("cmd")
+        .args(["/C", "clip"])
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+    else {
+        return false;
+    };
+    // 不带换行，粘贴后光标停在代码尾部
+    let wrote = match child.stdin.as_mut() {
+        Some(stdin) => stdin.write_all(text.as_bytes()).is_ok(),
+        None => false,
+    };
+    wrote && child.wait().map(|s| s.success()).unwrap_or(false)
+}
+
 fn now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -71,10 +89,13 @@ pub async fn ensure_session(client: &reqwest::Client, data: &Path) -> Result<Ses
     }
     if let Ok(text) = std::fs::read_to_string(token_path(data)) {
         if let Ok(old) = serde_json::from_str::<Session>(&text) {
-            if let Ok(s) = refresh(client, &old).await {
-                save(data, &s)?;
-                println!("token 已静默续期：{}", s.player_name);
-                return Ok(s);
+            match refresh(client, &old).await {
+                Ok(s) => {
+                    save(data, &s)?;
+                    println!("token 已静默续期：{}", s.player_name);
+                    return Ok(s);
+                }
+                Err(e) => println!("静默续期失败：{e}（改走设备码登录）"),
             }
         }
     }
@@ -90,10 +111,13 @@ pub async fn login(client: &reqwest::Client, data: &Path) -> Result<Session, Str
     }
     if let Ok(text) = std::fs::read_to_string(token_path(data)) {
         if let Ok(old) = serde_json::from_str::<Session>(&text) {
-            if let Ok(s) = refresh(client, &old).await {
-                save(data, &s)?;
-                println!("token 已静默续期：{}", s.player_name);
-                return Ok(s);
+            match refresh(client, &old).await {
+                Ok(s) => {
+                    save(data, &s)?;
+                    println!("token 已静默续期：{}", s.player_name);
+                    return Ok(s);
+                }
+                Err(e) => println!("静默续期失败：{e}（改走设备码登录）"),
             }
         }
     }
@@ -112,6 +136,9 @@ pub async fn login(client: &reqwest::Client, data: &Path) -> Result<Session, Str
     println!("微软正版账号验证（实验前提：必须拥有 Minecraft: Java Edition）");
     println!("  打开 {}", dc.verification_uri);
     println!("  输入代码 {}", dc.user_code);
+    if copy_clipboard(&dc.user_code) {
+        println!("  ✓ 验证代码已自动复制到剪贴板——在网页输入框直接 Ctrl+V 粘贴");
+    }
     if let Some(direct) = &dc.direct_verification_uri {
         println!("  （或直接打开 {}）", direct);
     }

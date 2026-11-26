@@ -30,7 +30,7 @@ code{font-family:Consolas,monospace;background:rgba(95,232,255,.08);padding:1px 
   <a href="music.html" style="color:#5fe8ff;text-decoration:none">♪ 音乐舱</a>
   <span style="color:#ffc861">⚗ 实验场（当前）</span>
   <span style="flex:1"></span>
-  <span style="background:rgba(95,232,255,.14);border:1px solid rgba(95,232,255,.5);color:#9fe6ff;font-family:Consolas,monospace;font-size:12px;padding:3px 10px;border-radius:999px">v0.0.9.beta</span>
+  <span style="background:rgba(95,232,255,.14);border:1px solid rgba(95,232,255,.5);color:#9fe6ff;font-family:Consolas,monospace;font-size:12px;padding:3px 10px;border-radius:999px">v0.1.1.beta</span>
   <span style="color:#ffc861;font-size:12px">⚠ 实验项目 · 可能不稳定</span>
 </div>
 <div class="wrap">
@@ -44,14 +44,14 @@ code{font-family:Consolas,monospace;background:rgba(95,232,255,.08);padding:1px 
   <h1>mc-native-exp · 原生启动实验</h1>
   <div class="sub">
     围绕一个问题做实验：拿到官方全套 Minecraft 文件与正版账号后，启动能否不依赖 JVM？<br>
-    当前版本 <code>v0.0.9.beta</code> · 构建 2026-11-25（版本方案：patch 逐次 +1 至 .9 后进位，全程带 beta）。
+    当前版本 <code>v0.1.1.beta</code> · 构建 2026-11-25（版本方案：patch 逐次 +1 至 .9 后进位，全程带 beta）。
   </div>
 
   <div class="card">
     <h2>① 官方全量下载 + 正版账号</h2>
     <ul>
       <li>piston-meta 全版本清单（实测 <b>925 个版本</b>），client / libraries / assets / natives 全套官方源下载，SHA1 流式校验 + 断点续传</li>
-      <li>微软设备码登录 → Xbox → Minecraft services → <b>所有权校验</b>：无正版账号实验拒绝继续</li>
+      <li>微软设备码登录（<b>验证代码自动复制到剪贴板</b>，Ctrl+V 即可）→ Xbox → Minecraft services → <b>所有权校验</b>：无正版账号实验拒绝继续</li>
     </ul>
   </div>
 
@@ -75,23 +75,38 @@ code{font-family:Consolas,monospace;background:rgba(95,232,255,.08);padding:1px 
   </div>
 
   <div class="card">
+    <h2>④ AI 伙伴「小七」（游戏内实体）</h2>
+    <ul>
+      <li><b>自动换皮 + 跟随</b>：Fabric/Quilt 1.21.4 实例启动时自动装模组（含 Fabric API，嵌在 exe 里），
+        进世界即生成专属皮肤、头顶名牌的伙伴，跟在身后 2 格，平滑趋近不瞬移</li>
+      <li><b>聊天指令</b>：<code>#ai 跟随</code> / <code>#ai 停下</code> / <code>#ai 过来</code> / <code>#ai 看我</code>——
+        本地规则即时生效，断网可用</li>
+      <li><b>AI 闲聊</b>：<code>#ai 你好呀</code> 转发启动器本地 AI 桥（127.0.0.1 随机端口 + 随机 token，仅注入本机游戏进程）；
+        不填 Key 也能用规则兜底，填了才走 OpenAI 兼容 LLM</li>
+      <li><b>任意服务器可用</b>：纯客户端幽灵实体，服务端不可见、不参与存档/战斗，原版服同样能显示</li>
+      <li><b>实测通过</b>（2026-11-25）：生成/换皮/跟随/<code>#ai 停下</code>/规则兜底/桥鉴权全部通过</li>
+    </ul>
+  </div>
+
+  <div class="card">
     <h2>宣传短片 · 12s</h2>
     <video src="/brand/promo.mp4" poster="/brand/logo-512.png" controls preload="none"
       style="width:100%;max-width:720px;display:block;margin:0 auto;border-radius:12px;border:1px solid rgba(95,232,255,.25)"></video>
     <p style="color:var(--muted,#8b93a8);font-size:12.5px;margin-top:8px;text-align:center">
-      实验概览：官方全量下载 · 正版认证 · 四大加载器自动安装 · 脱 JVM 可行性数据。
+      实验概览：官方全量下载 · 正版认证 · 四大加载器自动安装 · AI 伙伴小七 · 脱 JVM 可行性数据。
       返回<a href="/" style="color:#5fe8ff">Aurora 主站</a>下载正式版启动器。
     </p>
   </div>
 
   <a class="dl" href="https://github.com/xcqm12/mc-native-exp" target="_blank" rel="noopener">GitHub 仓库</a>
-  <a class="dl" href="download/mc-native-exp-0.0.9.beta-windows-x64.exe">⬇ 直链下载 v0.0.9.beta（Windows x64 · 本站 CDN）</a>
-  <a class="dl" href="https://github.com/xcqm12/mc-native-exp/releases/tag/v0.0.9.beta" target="_blank" rel="noopener">GitHub Releases（v0.0.9.beta）</a>
+  <a class="dl" href="download/mc-native-exp-0.1.1.beta-windows-x64.exe">⬇ 直链下载 v0.1.1.beta（Windows x64 · 本站 CDN）</a>
+  <a class="dl" href="https://github.com/xcqm12/mc-native-exp/releases/tag/v0.1.1.beta" target="_blank" rel="noopener">GitHub Releases（v0.1.1.beta）</a>
   <div style="margin-top:10px;font-size:12.5px;color:#8b93a8">SHA256：<code id="sha">见下方校验说明</code></div>
 
   <div class="card">
     <h2>最近更新</h2>
     <ul>
+      <li><b>v0.1.1.beta</b>（2026-11-26）：目录管理三件套——数据目录可迁移到任意磁盘、多版本隔离（每版本独立存档/模组/资源包）、游戏目录可自定义（版本级 + 全局默认）；Fabric 隔离目录启动实测通过。</li>
       <li><b>v0.0.9.beta</b>（2026-11-25）：GUI 改为桌面启动器布局（左侧导航栏 + 顶部标题栏 + 底部状态栏）；
         中文字体候选链加固（雅黑→黑体→等线→宋体），六页中文实测无方框；本页新增本站直链下载 + SHA256 校验。</li>
       <li><b>v0.0.8.beta</b>（2026-11-24）：AI 伙伴「小七」专属 128×128 双层皮肤（哥特萝莉，白帽黑丝带 / 束腰 Z 字 / 狐尾）。</li>
@@ -102,7 +117,7 @@ code{font-family:Consolas,monospace;background:rgba(95,232,255,.08);padding:1px 
 
   <div class="foot">
     <b>校验：</b>SHA256 见 <a href="download/SHA256SUMS.txt" style="color:#5fe8ff">SHA256SUMS.txt</a>；
-    PowerShell 复核：<code>Get-FileHash .\mc-native-exp-0.0.9.beta-windows-x64.exe -Algorithm SHA256</code>。<br>
+    PowerShell 复核：<code>Get-FileHash .\mc-native-exp-0.1.1.beta-windows-x64.exe -Algorithm SHA256</code>。<br>
     仅用于技术研究；下载物只做字节级解析、从不执行；不绕过任何认证。<br>
     与 Aurora Launcher 正式版相互独立；Minecraft 是 Mojang/Microsoft 的商标，本项目与其无隶属关系。
   </div>

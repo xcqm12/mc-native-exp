@@ -272,4 +272,6 @@ prev.convert("RGB").save(r"F:\mc-native-exp\brand\skin-preview.png")
 
 img.save(r"F:\mc-native-exp\brand\skin-xiaoqi-128.png")
 img.save(r"F:\mc-native-exp\data\skins\xiaoqi-128.png")
-print("skin saved (128x128 slim double-layer)")
+img.resize((64, 64), Image.NEAREST).save(
+    r"F:\963\mod\companion-exp\src\main\resources\assets\mcne\textures\entity\xiaoqi.png")
+print("skin saved (128x128 slim double-layer; 64x64 game texture)")

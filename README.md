@@ -31,6 +31,38 @@ mc-native-exp interp 1.21.4
 mc-native-exp report
 ```
 
+## 小七 AI 伙伴（游戏内实体）
+
+启动器会在 **Fabric / Quilt 1.21.4** 实例启动前自动安装两件东西（内容相同不覆盖）：
+
+- `mods/xiaoqi-companion.jar` — 客户端模组「小七」（嵌入启动器 exe，无需手动下载）
+- `mods/fabric-api-0.119.4+1.21.4.jar` — 模组依赖（实例里已有任意 fabric-api 时跳过）
+
+进世界后自动生成客户端幽灵伙伴：专属皮肤、头顶「小七」名牌、跟在玩家身后。她是**纯客户端实体**
+（服务端不可见、不参与存档/战斗/同步），所以在任意服务器（包括原版服）都能用，不需要服务端装模组。
+
+聊天框指令（本地即时生效，断网也能用）：
+
+```
+#ai 跟随      #ai 停下      #ai 过来      #ai 看我
+```
+
+其他内容（`#ai 你好呀`、`#ai 怎么做工作台`）会转发到启动器的本地 AI 桥
+（`127.0.0.1` 随机端口 + 随机 Bearer token，token 只注入本机游戏进程）：
+
+- 没配 Key → 规则兜底，提示可用指令（不报错）
+- 配了 Key → OpenAI 兼容 `/chat/completions`（DeepSeek / OpenAI / 其他兼容服务）
+
+配置方式（GUI：设置 → 小七伙伴；或命令行）：
+
+```powershell
+mc-native-exp config --ai-base-url https://api.deepseek.com/v1 --ai-key sk-... --ai-model deepseek-chat
+mc-native-exp config --ai false      # 关闭小七（不装模组、不起 AI 桥）
+```
+
+限制：模组编译目标为 MC 1.21.4，其他版本实例不安装（不破坏现有模组环境）；AI 只聊天/给建议，
+不会代替玩家操作游戏。
+
 ## 结构
 
 - `src/manifest.rs` — piston-meta 全版本清单
