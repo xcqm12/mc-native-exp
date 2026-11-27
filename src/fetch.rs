@@ -85,12 +85,39 @@ pub(crate) fn bmclapi_mirror(url: &str, version_id: &str) -> Option<String> {
     }
 }
 
+/// BMCLAPI 熔断状态（模块级共享）：镜像连续失败达阈值后本次运行直接走官方。
+mod bmclapi_breaker {
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    static FAILS: AtomicUsize = AtomicUsize::new(0);
+    static DISABLED: AtomicBool = AtomicBool::new(false);
+
+    pub fn disabled() -> bool {
+        DISABLED.load(Ordering::Relaxed)
+    }
+
+    pub fn on_failure() {
+        let n = FAILS.fetch_add(1, Ordering::Relaxed) + 1;
+        if n >= 3 && !DISABLED.swap(true, Ordering::Relaxed) {
+            eprintln!("  BMCLAPI 连续 {n} 次失败——本次运行熔断，改走官方源");
+        }
+    }
+
+    pub fn on_success() {
+        FAILS.store(0, Ordering::Relaxed);
+    }
+}
+
 /// 候选顺序：maven/meta 类国内镜像优先；assets 大流量走官方优先
 /// （本网络实测 BMCLAPI assets 高并发不稳），无镜像则官方单独。
+/// BMCLAPI 熔断：镜像挂掉时避免 63 个库 × 3 次重试全部撞墙。
 pub(crate) fn mirror_candidates(url: &str, version_id: &str) -> Vec<String> {
-    let assets_first = url.contains("resources.download.minecraft.net");
-    match bmclapi_mirror(url, version_id) {
-        Some(m) if assets_first => vec![url.to_string(), m],
+    let mirror = if bmclapi_breaker::disabled() {
+        None
+    } else {
+        bmclapi_mirror(url, version_id)
+    };
+    match mirror {
+        Some(m) if url.contains("resources.download.minecraft.net") => vec![url.to_string(), m],
         Some(m) => vec![m, url.to_string()],
         None => vec![url.to_string()],
     }
@@ -141,13 +168,21 @@ pub(crate) async fn download_one(
     size: u64,
     label: &str,
 ) -> Result<(bool, u64), String> {
-    // 镜像优先（BMCLAPI），失败回落官方
+    // 镜像优先（BMCLAPI），失败回落官方；镜像连续失败自动熔断
     let candidates = mirror_candidates(url, "");
     let mut last = String::new();
     for cand in &candidates {
         match download_one_from(client, cand, dest, sha1_hex, size, label).await {
-            Ok(r) => return Ok(r),
+            Ok(r) => {
+                if cand.contains("bmclapi2.bangbang93.com") {
+                    bmclapi_breaker::on_success();
+                }
+                return Ok(r);
+            }
             Err(e) => {
+                if cand.contains("bmclapi2.bangbang93.com") {
+                    bmclapi_breaker::on_failure();
+                }
                 if candidates.len() > 1 {
                     eprintln!(
                         "  {label}：{} 失败（{e}），换源重试……",
@@ -196,7 +231,7 @@ async fn download_one_from(
                 if status_like {
                     return Err(format!("{label}：{e}"));
                 }
-                eprintln!("  重试 {}/2（{}）：{}", attempt + 1, label, e);
+                eprintln!("  重试 {}/3（{}）：{}", attempt + 1, label, e);
             }
         }
     }

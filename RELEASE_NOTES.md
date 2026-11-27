@@ -1,4 +1,38 @@
-# mc-native-exp v0.1.1.beta（实验 · 可能不稳定）
+# mc-native-exp v0.1.2.beta（实验 · 可能不稳定）
+
+> 版本方案：patch 逐次 +1 至 .9 后进位——0.1.1 → 0.1.2。
+
+## 本版修复：Forge 安装/启动全链 + 弱链路下载
+
+- **BMCLAPI 熔断**：镜像整体不可达时（2026-11-27 实测 bmclapi2 全站 000），
+  连续失败 3 次即本次运行熔断，直接走官方/中转源——不再 63 个库 ×3 次重试刷屏
+- **Forge maven 中转**：新增分发站 `/forge-relay/`（+ `/forge-cache/` 落盘缓存），
+  安装器与自产库改走中转，绕开本网络到 maven.minecraftforge.net 的传输中断
+- **JVM 参数全透传**：`arguments.jvm` 字符串参数不再按 `-D/-X` 前缀过滤——
+  `--add-modules` / `--add-opens` 这类"选项+值"成对参数曾被拆散，报
+  `--add-modules requires modules to be specified`
+- **补 `${library_directory}` / `${classpath_separator}` 占位符**：缺少时 forge 的
+  `-p` 模块路径全成字面量 → securejarhandler 模块找不到 → `--add-opens` 失效 →
+  `InaccessibleObjectException: IMPL_LOOKUP`（本版实测修复）
+- **smoke 判定加固**：只认本次启动后更新的 `latest.log`（旧冒烟日志不再造成假阳性），
+  并识别 `Error: --` / `Unrecognized VM option` 等 JVM 启动失败直接判红
+- 安装器版本显示修正：forge/neoforge 显示「同 loader 版本」而非 `None`；
+  重试计数 `1/2` 改为真实的 `1/3`
+
+## 实测（2026-11-27）
+
+| 项 | 结果 |
+|---|---|
+| Forge 1.20.1 安装 | `install forge 1.20.1` → `1.20.1-forge-47.4.29`，EXIT=0 |
+| Forge 1.20.1 启动 | `MinecraftForge v47.4.29 Initialized` / ModLauncher 10.0.9 / 资源重载完成 |
+| Fabric 1.21.4 回归 | smoke 通过（Setting user + LWJGL Backend），小七伙伴链路不受影响 |
+| 中转可用性 | `/forge-relay/` 回源 1 秒内 206，安装器 45+18 库一次通过 |
+
+## 上一版：v0.1.1.beta
+
+小七 AI 伙伴进入游戏（自动换皮 + 跟随 + `#ai` 指令 + 本地 AI 桥）与设备码验证自动复制。
+
+## 历史：v0.1.1.beta
 
 > 版本方案：patch 逐次 +1 至 .9 后进位——0.1.0 → 0.1.1。
 

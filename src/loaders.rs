@@ -129,9 +129,13 @@ async fn install_via_installer(
     let installer_ver = if matches!(loader, "fabric" | "quilt") {
         Some(latest_installer_version(client, loader).await?)
     } else {
+        // forge/neoforge 安装器与 loader 同版本号（forge-<mc>-<lv>-installer.jar）
         None
     };
-    println!("{loader} loader {lv} / installer {installer_ver:?}（MC {mc}）");
+    println!(
+        "{loader} loader {lv} / installer {}（MC {mc}）",
+        installer_ver.as_deref().unwrap_or("同 loader 版本")
+    );
 
     // 原版 JSON 先就位（安装器要 inheritsFrom 的父版本与父 jar）
     fetch::fetch_version(client, data, Some(mc), true).await?;
@@ -213,6 +217,9 @@ async fn install_via_installer(
 /* ── Forge / NeoForge：官方安装器 + 自动 JRE ───────────────── */
 
 const NEOFORGE_RELAY: &str = "https://mcdles.us.ci/neoforge-relay";
+/// Forge maven 中转：本地 reqwest 到 maven.minecraftforge.net（Cloudflare）
+/// 间歇传输中断（2026-11-27 实测），BMCLAPI 也可能整站不可达——服务器回源稳定。
+const FORGE_RELAY: &str = "https://mcdles.us.ci/forge-relay";
 
 /// NeoForge 最新版：多源回退（分发站中转 → BMCLAPI metadata → 官方 metadata → 官方 API）。
 /// 版本号形如 <mc>.<build>。
@@ -355,9 +362,9 @@ async fn installer_url(
             "{NEOFORGE_RELAY}/releases/net/neoforged/neoforge/{lv}/neoforge-{lv}-installer.jar"
         ));
     }
-    // Forge：installer 直链（maven.cloudflare / files.minecraftforge.net）
+    // Forge：installer 直链（优先中转，官方 maven 直连弱链路不稳）
     Ok(format!(
-        "https://maven.minecraftforge.net/net/minecraftforge/forge/{mc}-{lv}/forge-{mc}-{lv}-installer.jar"
+        "{FORGE_RELAY}/net/minecraftforge/forge/{mc}-{lv}/forge-{mc}-{lv}-installer.jar"
     ))
 }
 
@@ -529,7 +536,7 @@ fn final_lib_url(name: &str, artifact_url: &str, lib_declared_url: &str) -> Stri
     let ga = parts.first().copied().unwrap_or("");
     let rel = maven_rel_slash(name);
     if ga == "net.minecraftforge" && parts.get(1).copied() == Some("forge") {
-        return format!("https://maven.minecraftforge.net/{rel}");
+        return format!("{FORGE_RELAY}/{rel}");
     }
     if ga == "net.neoforged" {
         // 本网络到 maven.neoforged.net 不可达：走分发站中转
@@ -540,9 +547,16 @@ fn final_lib_url(name: &str, artifact_url: &str, lib_declared_url: &str) -> Stri
     if declared.starts_with("https://maven.neoforged.net") {
         declared = "https://mcdles.us.ci/neoforge-relay/releases".to_string();
     }
+    // 声明走 maven.minecraftforge.net 的第三方库同样改写（直连 Cloudflare 弱链路不稳）
+    if declared.starts_with("https://maven.minecraftforge.net") {
+        declared = FORGE_RELAY.to_string();
+    }
     let mut a_url = artifact_url.to_string();
     if a_url.starts_with("https://maven.neoforged.net") {
         a_url = a_url.replacen("https://maven.neoforged.net", "https://mcdles.us.ci/neoforge-relay", 1);
+    }
+    if a_url.starts_with("https://maven.minecraftforge.net") {
+        a_url = a_url.replacen("https://maven.minecraftforge.net", FORGE_RELAY, 1);
     }
     if !declared.is_empty() {
         return format!("{declared}/{rel}");

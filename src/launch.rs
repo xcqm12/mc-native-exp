@@ -195,6 +195,11 @@ pub async fn run(
         ph("launcher_version", env!("CARGO_PKG_VERSION")),
         ph("classpath", &classpath),
         ph("user_properties", "{}"),
+        // forge/neoforge 的 -p 模块路径与 -DignoreList 用这两个占位符；
+        // 缺了会把字面量 "${library_directory}" 传给 JVM，securejarhandler
+        // 模块加载不到 → --add-opens 失效 → InaccessibleObjectException
+        ph("library_directory", &data.join("libraries").to_string_lossy()),
+        ph("classpath_separator", ";"),
     ];
     let sub = |s: &str| -> String {
         let mut out = s.to_string();
@@ -216,14 +221,10 @@ pub async fn run(
     if let Some(arr) = v.pointer("/arguments/jvm").and_then(|x| x.as_array()) {
         for item in arr {
             match item {
-                Value::String(s) => {
-                    if s.contains("${classpath}") {
-                        jvm.push(sub(s));
-                    } else if s.starts_with("-D") || s.starts_with("-X") {
-                        // 现代版本自带的一批 -D 与 -XX：原样透传（rules 粗放行）
-                        jvm.push(sub(s));
-                    }
-                }
+                // arguments.jvm 里的字符串参数全部透传（含 --add-opens / --add-modules
+                // 这类"选项 + 值"成对出现的参数；按前缀过滤会丢值，JVM 直接报
+                // "--add-modules requires modules to be specified"）
+                Value::String(s) => jvm.push(sub(s)),
                 Value::Object(_) => {} // 带 rules 的条目：原型按默认 features 全放行缺失跳过
                 _ => {}
             }
@@ -294,6 +295,7 @@ pub async fn run(
         .stderr(std::process::Stdio::piped());
 
     println!("启动 {id}（{}，mem {mem_mb}MB，smoke {smoke_secs}s）……", java.display());
+    let launched_at = std::time::SystemTime::now();
     let mut child = cmd.spawn().map_err(|e| format!("java 进程：{e}"))?;
 
     let log_path = data.join(format!("launch-{id}.log"));
@@ -358,8 +360,31 @@ pub async fn run(
         let _ = h.join();
     }
     let log = std::fs::read_to_string(&log_path).unwrap_or_default();
-    // quilt 等把 log4j 输出重定向到 game/logs/latest.log（stdout 为空）
-    let game_log = std::fs::read_to_string(game_dir.join("logs").join("latest.log")).unwrap_or_default();
+    // quilt 等把 log4j 输出重定向到 game/logs/latest.log（stdout 为空）；
+    // 只在本次启动之后更新过的日志才算数（旧冒烟残留会让判定假阳性）
+    let game_log_path = game_dir.join("logs").join("latest.log");
+    let fresh = std::fs::metadata(&game_log_path)
+        .and_then(|m| m.modified())
+        .map(|t| t > launched_at)
+        .unwrap_or(false);
+    let game_log = if fresh {
+        std::fs::read_to_string(&game_log_path).unwrap_or_default()
+    } else {
+        String::new()
+    };
+    // JVM 自身启动失败（模块参数错、Unrecognized VM option 等）
+    let jvm_error = ["Error: --", "Error: Could not", "Unrecognized VM option", "Error occurred during initialization"]
+        .iter()
+        .find(|m| log.contains(*m));
+    if let Some(marker) = jvm_error {
+        let tail: Vec<&str> = log.lines().rev().take(20).collect();
+        println!("smoke 判定：❌ JVM 启动失败（{marker}）");
+        println!("── 日志尾部 ──");
+        for l in tail.iter().rev() {
+            println!("  {l}");
+        }
+        std::process::exit(2);
+    }
     let combined = format!("{log}{game_log}");
     let ok_markers = ["Backend library: LWJGL", "Setting user:", "OpenAL initialized", "Sound engine started"];
     let hit = ok_markers.iter().any(|m| combined.contains(m));
