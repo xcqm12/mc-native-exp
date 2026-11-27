@@ -1,1 +1,1 @@
-b9a21441b28813bc4fb744d539d4a5bf2127aaa7ca49e921dbc06a69ae1e1c51  mc-native-exp-0.1.1.beta-windows-x64.exe
+da630ee135b238edfe5bf19c848043b32d488b41126dd4e48851eb6b1a4a9b09  mc-native-exp-0.1.2.beta-windows-x64.exe
